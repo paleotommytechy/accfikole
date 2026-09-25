@@ -41,10 +41,40 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install cloudflared
+        run: |
+          curl -L --fail --silent --show-error \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /usr/local/bin/cloudflared
+          chmod +x /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Start public tunnel and allow exact host in Vite
+        run: |
+          cloudflared tunnel --url http://127.0.0.1:3000 --no-autoupdate > /tmp/cloudflared.log 2>&1 &
+          echo $! > /tmp/cloudflared.pid
+
+          for i in {1..45}; do
+            URL=$(grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' /tmp/cloudflared.log | head -1 || true)
+            if [ -n "$URL" ]; then
+              HOST=${URL#https://}
+              echo "$URL" | tee /tmp/preview-url.txt
+              echo "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=$HOST" >> "$GITHUB_ENV"
+              echo "Preview: $URL"
+              echo "Allowed Vite host: $HOST"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          cat /tmp/cloudflared.log
+          exit 1
+
       - name: Start dev server
         run: |
           pnpm dev > /tmp/accfikole-dev.log 2>&1 &
           echo $! > /tmp/accfikole-dev.pid
+
           for i in {1..45}; do
             if curl --fail --silent http://127.0.0.1:3000/ > /dev/null; then
               echo "Web dev server is ready on port 3000"
@@ -52,29 +82,24 @@ jobs:
             fi
             sleep 2
           done
+
           cat /tmp/accfikole-dev.log
           exit 1
 
-      - name: Install cloudflared
+      - name: Verify public preview
         run: |
-          curl -L --fail --silent --show-error             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64             -o /usr/local/bin/cloudflared
-          chmod +x /usr/local/bin/cloudflared
-          cloudflared --version
-
-      - name: Start public tunnel
-        run: |
-          cloudflared tunnel --url http://127.0.0.1:3000 --no-autoupdate > /tmp/cloudflared.log 2>&1 &
-          echo $! > /tmp/cloudflared.pid
-          for i in {1..45}; do
-            URL=$(grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' /tmp/cloudflared.log | head -1 || true)
-            if [ -n "$URL" ]; then
-              echo "$URL" | tee /tmp/preview-url.txt
-              echo "Preview: $URL"
+          URL=$(cat /tmp/preview-url.txt)
+          for i in {1..30}; do
+            if curl --fail --silent "$URL" > /tmp/public-preview.html; then
+              echo "Public preview is responding successfully at $URL"
               exit 0
             fi
             sleep 2
           done
+
+          echo "Public preview failed:"
           cat /tmp/cloudflared.log
+          cat /tmp/accfikole-dev.log
           exit 1
 
       - name: Post preview URL to validation PR
