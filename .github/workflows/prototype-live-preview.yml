@@ -93,5 +93,5 @@ jobs:
 
       - name: Keep preview alive
         run: |
-          echo "Preview will stay alive while this job is running."
+          echo "Migrated ACCF Prototype preview will stay alive while this job is running."
           sleep 1200
