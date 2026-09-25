@@ -6,6 +6,11 @@ on:
       - Prototype
     paths:
       - ".github/workflows/prototype-live-preview.yml"
+  pull_request:
+    branches:
+      - staging
+    paths:
+      - ".github/workflows/prototype-live-preview.yml"
 
 jobs:
   preview:
