@@ -59,9 +59,9 @@ jobs:
             if [ -n "$URL" ]; then
               HOST=${URL#https://}
               echo "$URL" | tee /tmp/preview-url.txt
-              echo "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=$HOST" >> "$GITHUB_ENV"
+              echo "PREVIEW_ALLOWED_HOST=$HOST" >> "$GITHUB_ENV"
               echo "Preview: $URL"
-              echo "Allowed Vite host: $HOST"
+              echo "Allowed Vite preview host: $HOST"
               exit 0
             fi
             sleep 2
