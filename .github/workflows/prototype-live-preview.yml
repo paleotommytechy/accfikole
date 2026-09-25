@@ -1,0 +1,97 @@
+name: Prototype live preview
+
+on:
+  push:
+    branches:
+      - Prototype
+    paths:
+      - ".github/workflows/prototype-live-preview.yml"
+  pull_request:
+    branches:
+      - staging
+    paths:
+      - ".github/workflows/prototype-live-preview.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout Prototype
+        uses: actions/checkout@v4
+        with:
+          ref: Prototype
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.25.0 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start dev server
+        run: |
+          pnpm dev > /tmp/accfikole-dev.log 2>&1 &
+          echo $! > /tmp/accfikole-dev.pid
+          for i in {1..45}; do
+            if curl --fail --silent http://127.0.0.1:3000/ > /dev/null; then
+              echo "Web dev server is ready on port 3000"
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/accfikole-dev.log
+          exit 1
+
+      - name: Install cloudflared
+        run: |
+          curl -L --fail --silent --show-error             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64             -o /usr/local/bin/cloudflared
+          chmod +x /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Start public tunnel
+        run: |
+          cloudflared tunnel --url http://127.0.0.1:3000 --no-autoupdate > /tmp/cloudflared.log 2>&1 &
+          echo $! > /tmp/cloudflared.pid
+          for i in {1..45}; do
+            URL=$(grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' /tmp/cloudflared.log | head -1 || true)
+            if [ -n "$URL" ]; then
+              echo "$URL" | tee /tmp/preview-url.txt
+              echo "Preview: $URL"
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/cloudflared.log
+          exit 1
+
+      - name: Post preview URL to validation PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          URL=$(cat /tmp/preview-url.txt)
+          gh pr comment 1 --body "Temporary Prototype preview: $URL"
+
+      - name: Upload preview URL
+        uses: actions/upload-artifact@v4
+        with:
+          name: prototype-preview-url
+          path: /tmp/preview-url.txt
+          retention-days: 1
+
+      - name: Keep preview alive
+        run: |
+          echo "Preview will stay alive while this job is running."
+          sleep 1200
