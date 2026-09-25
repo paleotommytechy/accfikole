@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - Prototype
+  pull_request:
+    branches:
+      - staging
   workflow_dispatch:
 
 jobs:
@@ -12,7 +15,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Checkout Prototype
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js 24
@@ -35,7 +38,7 @@ jobs:
           pnpm dev > /tmp/accfikole-dev.log 2>&1 &
           echo $! > /tmp/accfikole-dev.pid
 
-      - name: Wait for web app
+      - name: Verify web app on port 3000
         run: |
           for i in {1..30}; do
             if curl --fail --silent http://127.0.0.1:3000/ > /tmp/web.html; then
@@ -47,7 +50,7 @@ jobs:
           cat /tmp/accfikole-dev.log
           exit 1
 
-      - name: Wait for docs app
+      - name: Verify docs app on port 3001
         run: |
           for i in {1..30}; do
             if curl --fail --silent http://127.0.0.1:3001/ > /tmp/docs.html; then
