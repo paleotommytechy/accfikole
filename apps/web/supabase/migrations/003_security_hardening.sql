@@ -618,6 +618,52 @@ $$;
 revoke all on function public.accf_assign_task_to_all_users(uuid) from public;
 grant execute on function public.accf_assign_task_to_all_users(uuid) to authenticated;
 
+create or replace function public.accf_update_current_user_streak()
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $
+declare
+  v_user_id uuid := auth.uid();
+  v_current integer;
+  v_longest integer;
+  v_last date;
+  v_next integer;
+begin
+  if v_user_id is null then
+    raise exception 'Authentication required';
+  end if;
+
+  select coalesce(current_streak, 0), coalesce(longest_streak, 0), last_streak_day::date
+  into v_current, v_longest, v_last
+  from public.profiles
+  where id = v_user_id
+  for update;
+
+  if not found then
+    raise exception 'Profile not found';
+  end if;
+
+  if v_last = current_date then
+    return;
+  elsif v_last = current_date - 1 then
+    v_next := v_current + 1;
+  else
+    v_next := 1;
+  end if;
+
+  update public.profiles
+  set current_streak = v_next,
+      longest_streak = greatest(v_longest, v_next),
+      last_streak_day = current_date
+  where id = v_user_id;
+end
+$;
+
+revoke all on function public.accf_update_current_user_streak() from public;
+grant execute on function public.accf_update_current_user_streak() to authenticated;
+
 -- Block direct browser writes to reward ledgers. Trusted SECURITY DEFINER RPCs
 -- above remain able to write as their function owner.
 revoke insert, update, delete on public.coin_transactions from anon, authenticated;
@@ -636,7 +682,7 @@ begin
     from pg_proc p
     join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public'
-      and p.proname in ('approve_coin_transaction', 'assign_task_to_all_users', 'increment_coins')
+      and p.proname in ('approve_coin_transaction', 'assign_task_to_all_users', 'increment_coins', 'update_user_streak')
   loop
     execute format('revoke execute on function %s from public, anon, authenticated', fn.signature);
   end loop;
