@@ -15,10 +15,8 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Checkout Prototype branch
+      - name: Checkout exact workflow candidate
         uses: actions/checkout@v4
-        with:
-          ref: Prototype
 
       - name: Setup Node.js 24
         uses: actions/setup-node@v4
@@ -36,6 +34,18 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm check-types
+
+      - name: Test
+        run: pnpm test
+
+      - name: Production build
+        run: pnpm build
 
       - name: Start dev servers
         run: |
