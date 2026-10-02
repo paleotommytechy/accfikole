@@ -56,7 +56,7 @@ export default async function handler(req: any, res: any) {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents,
-      config: { systemInstruction }
+      config: { systemInstruction, httpOptions: { timeout: 30_000 } }
     });
 
     return res.status(200).json({ answer: response.text ?? '' });
