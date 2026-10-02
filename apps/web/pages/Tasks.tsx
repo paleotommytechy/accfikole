@@ -379,17 +379,37 @@ const QuizModal: React.FC<QuizModalProps> = ({ quiz, onClose, onComplete }) => {
         }
     };
 
-    const handleSubmit = () => {
-        // Ensure all questions are answered before submitting
+    const handleSubmit = async () => {
         if (answers.some(a => a === null)) {
             addToast('Please answer all questions before submitting.', 'error');
             return;
         }
-        const score = answers.reduce((acc, answer, index) => {
-            return answer === questions[index].correct_option_index ? acc + 1 : acc;
-        }, 0);
-        const passed = score >= quiz.pass_threshold;
-        setFinalResult({ score, passed });
+        if (!supabase) {
+            addToast('Quiz service is unavailable.', 'error');
+            return;
+        }
+
+        const { data, error } = await supabase.rpc('accf_submit_weekly_quiz', {
+            p_quiz_id: quiz.id,
+            p_question_ids: questions.map(question => question.id),
+            p_answers: answers as number[],
+        });
+
+        if (error) {
+            addToast('Could not submit quiz: ' + error.message, 'error');
+            return;
+        }
+
+        const result = Array.isArray(data) ? data[0] : data;
+        if (!result) {
+            addToast('Quiz submission returned no result.', 'error');
+            return;
+        }
+
+        setFinalResult({
+            score: Number(result.score),
+            passed: Boolean(result.passed),
+        });
     };
 
     const handleNext = () => {
@@ -491,63 +511,6 @@ const Tasks: React.FC = () => {
     const [isQuizModalOpen, setIsQuizModalOpen] = useState(false);
     const [isCompletingChallenge, setIsCompletingChallenge] = useState(false);
 
-    const createCoinTransaction = async (
-        sourceType: 'task' | 'challenge' | 'quiz',
-        sourceId: string,
-        coinAmount: number | null | undefined
-    ) => {
-        if (!supabase || !currentUser) {
-            console.error("User or Supabase client not available.");
-            return;
-        }
-
-        if (typeof coinAmount !== 'number' || coinAmount <= 0) {
-            console.log(`No coin reward for this ${sourceType} or amount is invalid.`);
-            return;
-        }
-        if (!sourceId) {
-            console.error(`Missing source ID for ${sourceType} transaction.`);
-            return;
-        }
-
-        const { data: existingTx, error: checkError } = await supabase
-            .from('coin_transactions')
-            .select('id')
-            .eq('user_id', currentUser.id)
-            .eq('source_type', sourceType)
-            .eq('source_id', sourceId)
-            .limit(1)
-            .single();
-
-        if (checkError && checkError.code !== 'PGRST116') {
-             addToast('Error checking for existing transaction: ' + checkError.message, 'error');
-             return;
-        }
-        if (existingTx) {
-            console.log(`Transaction for this ${sourceType} already exists.`);
-            return;
-        }
-        
-        const { error: txError } = await supabase.from('coin_transactions').insert({
-            user_id: currentUser.id,
-            source_type: sourceType,
-            source_id: sourceId,
-            coin_amount: coinAmount,
-            status: 'pending',
-        });
-
-        if (txError) {
-            addToast("Error creating coin transaction: " + txError.message, 'error');
-        } else {
-            const message = sourceType === 'task' 
-                ? "Task complete! Reward is pending approval." 
-                : "Challenge complete! Reward is pending approval.";
-            if (sourceType !== 'quiz') { // Quiz has its own toast
-                addToast(message, 'success');
-            }
-        }
-    };
-
     const fetchData = useCallback(async () => {
         if (!supabase || !currentUser) return;
         
@@ -634,38 +597,14 @@ const Tasks: React.FC = () => {
 
     const handleQuizCompletion = async (result: { score: number, passed: boolean }) => {
         setIsQuizModalOpen(false);
-        if (!currentUser || !supabase || !challenge || !participant || !quiz) return;
 
-        const { score, passed } = result;
-
-        const attemptData = {
-            user_id: currentUser.id,
-            quiz_id: quiz.id,
-            score,
-            passed,
-        };
-
-        const { error: attemptError } = await supabase
-            .from('quiz_attempts')
-            .upsert(attemptData, { onConflict: 'user_id,quiz_id' });
-
-        if (attemptError) {
-            addToast('Error saving quiz attempt: ' + attemptError.message, 'error');
-        } else if (passed) {
-            addToast(`Quiz passed! Rewards are being processed.`, 'success');
-            
-            const { error: progressError } = await supabase.from('weekly_participants')
-                .update({ progress: 100 })
-                .eq('id', participant.id);
-            if(progressError) addToast('Error updating challenge progress.', 'error');
-
-            await createCoinTransaction('quiz', quiz.id, quiz.coin_reward);
-            await createCoinTransaction('challenge', challenge.id, challenge.coin_reward);
+        if (result.passed) {
+            addToast('Quiz passed! Rewards are pending approval.', 'success');
         } else {
-            addToast(`You didn't pass this time. Feel free to try again!`, 'info');
+            addToast("You didn't pass this time. Feel free to try again!", 'info');
         }
-        
-        fetchData();
+
+        await fetchData();
     };
     
     const grantVersePackReward = async () => {
@@ -717,52 +656,51 @@ const Tasks: React.FC = () => {
         if (!supabase || !currentUser || !challenge || !participant || isCompletingChallenge) return;
 
         setIsCompletingChallenge(true);
-        
-        const { error: progressError } = await supabase.from('weekly_participants')
-            .update({ progress: 100 })
-            .eq('id', participant.id);
+        const { error } = await supabase.rpc('accf_complete_weekly_challenge', {
+            p_challenge_id: challenge.id,
+        });
 
-        if (progressError) {
-            addToast('Error updating challenge progress.', 'error');
-            setIsCompletingChallenge(false);
-            return;
+        if (error) {
+            addToast('Error completing challenge: ' + error.message, 'error');
+        } else {
+            addToast('Challenge complete! Reward is pending approval.', 'success');
+            await fetchData();
         }
 
-        await createCoinTransaction('challenge', challenge.id, challenge.coin_reward);
-        
-        await fetchData();
         setIsCompletingChallenge(false);
     };
 
     const handleToggleTask = async (assignment: TaskAssignment, currentStatus: 'assigned' | 'done') => {
         if (!supabase || !currentUser) return;
-        const newStatus = currentStatus === 'assigned' ? 'done' : 'assigned';
-        
-        const { error } = await supabase
-            .from('tasks_assignments')
-            .update({ status: newStatus, completed_at: newStatus === 'done' ? new Date().toISOString() : null })
-            .eq('id', assignment.id);
+        const completing = currentStatus === 'assigned';
+
+        const { error } = await supabase.rpc('accf_set_task_completion', {
+            p_assignment_id: assignment.id,
+            p_complete: completing,
+        });
             
         if (error) {
-            addToast("Error updating task: " + error.message, 'error');
-        } else {
-            if (newStatus === 'done' && assignment.tasks) {
-                 await createCoinTransaction('task', assignment.task_id, assignment.tasks.coin_reward);
-                 
-                 if (assignment.tasks.frequency === 'daily') {
-                    const { error: streakError } = await supabase.rpc('update_user_streak', { p_user_id: currentUser.id });
-                    if (streakError) {
-                        console.error('Error updating user streak:', streakError);
-                    }
-                 }
-
-                 const remainingTasks = assignments.filter(a => a.id !== assignment.id && a.status === 'assigned');
-                 if (remainingTasks.length === 0) {
-                     await grantVersePackReward();
-                 }
-            }
-            fetchData();
+            addToast('Error updating task: ' + error.message, 'error');
+            return;
         }
+
+        if (completing && assignment.tasks) {
+            addToast('Task complete! Reward is pending approval.', 'success');
+
+            if (assignment.tasks.frequency === 'daily') {
+                const { error: streakError } = await supabase.rpc('accf_update_current_user_streak');
+                if (streakError) {
+                    console.error('Error updating user streak:', streakError);
+                }
+            }
+
+            const remainingTasks = assignments.filter(a => a.id !== assignment.id && a.status === 'assigned');
+            if (remainingTasks.length === 0) {
+                await grantVersePackReward();
+            }
+        }
+
+        await fetchData();
     };
 
     const handleTaskAction = (assignment: TaskAssignment) => {
