@@ -8,9 +8,7 @@ import type { WeeklyChallenge, TaskAssignment, WeeklyParticipant, Verse, Quiz, Q
 import { TrophyIcon, ClockIcon, GiftIcon, SparklesIcon, UsersIcon, CheckCircleIcon, XCircleIcon, QuestionMarkCircleIcon } from '../components/ui/Icons';
 import { versePacks } from '../services/verses';
 import Avatar from '../components/auth/Avatar';
-import { marked } from 'marked';
-
-
+import { renderSafeMarkdown } from '../lib/markdown';
 type TxStatus = 'pending' | 'approved' | 'rejected' | null;
 
 const AccountabilitySection: React.FC<{ participants: WeeklyParticipant[] }> = ({ participants }) => {
@@ -165,7 +163,7 @@ const WeeklyGroupChallenge: React.FC<WeeklyGroupChallengeProps> = ({
                         <h3 className="text-2xl font-bold mt-1">{challenge.title}</h3>
                         <div
                             className="prose prose-sm prose-invert mt-2 opacity-90 max-w-none"
-                            dangerouslySetInnerHTML={{ __html: challenge.details ? marked.parse(challenge.details) : '' }}
+                            dangerouslySetInnerHTML={{ __html: challenge.details ? renderSafeMarkdown(challenge.details) : '' }}
                         >
                         </div>
                     </div>
