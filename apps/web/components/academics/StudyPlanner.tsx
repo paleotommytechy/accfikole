@@ -4,8 +4,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { BookOpenIcon, XIcon, SendIcon, SparklesIcon } from '../ui/Icons';
 import Avatar from '../auth/Avatar';
 import { useAppContext } from '../../context/AppContext';
-import { marked } from 'marked';
-
+import { renderSafeMarkdown } from '../../lib/markdown';
 interface ChatMessage {
     sender: 'user' | 'ai';
     text: string;
@@ -139,7 +138,7 @@ const StudyPlanner: React.FC<StudyPlannerProps> = ({ allCourses }) => {
                                     >
                                         <div
                                             className="prose prose-sm dark:prose-invert max-w-none"
-                                            dangerouslySetInnerHTML={{ __html: marked.parse(msg.text) }}
+                                            dangerouslySetInnerHTML={{ __html: renderSafeMarkdown(msg.text) }}
                                         ></div>
                                     </div>
                                     {msg.sender === 'user' && <Avatar src={currentUser?.avatar_url} alt={currentUser?.full_name || 'You'} size="md" />}
