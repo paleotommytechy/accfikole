@@ -105,27 +105,20 @@ const CoinApprovalManager: React.FC = () => {
     const handleUpdateStatus = async (transaction: CoinTransaction, status: 'approved' | 'rejected') => {
         if (!supabase) return;
 
-        const { id: transactionId, user_id, coin_amount } = transaction;
+        const { id: transactionId } = transaction;
         setUpdatingTxnId(transactionId);
 
         try {
             if (status === 'approved') {
-                const { error: rpcError } = await supabase.rpc('accf_approve_coin_transaction', { p_transaction_id: transactionId });
-                if (rpcError) throw rpcError;
-
-                const notificationMessage = `Your reward of ${coin_amount} coins for completing "${getSourceName(transaction)}" has been approved!`;
-                
-                const { error: notificationError } = await supabase.from('notifications').insert({
-                    user_id: user_id,
-                    type: 'coin_approved',
-                    message: notificationMessage,
-                    link: '/store'
+                const { error } = await supabase.rpc('accf_approve_coin_transaction', {
+                    p_transaction_id: transactionId,
                 });
-                if (notificationError) console.error("Failed to create notification:", notificationError);
-
+                if (error) throw error;
                 addToast('Transaction approved and coins awarded.', 'success');
-            } else { // 'rejected'
-                const { error } = await supabase.from('coin_transactions').update({ status }).eq('id', transactionId);
+            } else {
+                const { error } = await supabase.rpc('accf_reject_coin_transaction', {
+                    p_transaction_id: transactionId,
+                });
                 if (error) throw error;
                 addToast('Transaction rejected.', 'info');
             }
