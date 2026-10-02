@@ -86,11 +86,7 @@ const FinancialManagement: React.FC = () => {
     // --- Donation Logic ---
     const handleUpdateDonationStatus = async (donationId: string, status: 'confirmed' | 'rejected') => {
         if (!supabase || !currentUser) return;
-        const { error } = await supabase.rpc('update_donation_status', {
-            p_donation_id: donationId,
-            p_new_status: status,
-            p_admin_id: currentUser.id
-        });
+        const { error } = await supabase.rpc('accf_update_donation_status', { p_donation_id: donationId, p_new_status: status });
         if (error) {
             addToast('Error updating status: ' + error.message, 'error');
         } else {
@@ -114,11 +110,7 @@ const FinancialManagement: React.FC = () => {
         const action = status === 'fulfilled' ? 'Fulfill (Send Data)' : 'Reject (Refund Coins)';
         
         showConfirm(`Are you sure you want to ${action}?`, async () => {
-            const { error } = await supabase.rpc('process_store_redemption', {
-                p_purchase_id: purchase.id,
-                p_status: status,
-                p_admin_id: currentUser.id
-            });
+            const { error } = await supabase.rpc('accf_process_store_redemption', { p_purchase_id: purchase.id, p_status: status });
 
             if (error) {
                 addToast('Error processing request: ' + error.message, 'error');
