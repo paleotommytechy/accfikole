@@ -664,6 +664,402 @@ $;
 revoke all on function public.accf_update_current_user_streak() from public;
 grant execute on function public.accf_update_current_user_streak() to authenticated;
 
+create or replace function public.accf_reject_coin_transaction(p_transaction_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $
+begin
+  if not public.accf_current_user_has_role(array['admin']) then
+    raise exception 'Admin role required';
+  end if;
+
+  update public.coin_transactions
+  set status = 'rejected'
+  where id = p_transaction_id
+    and status = 'pending';
+
+  if not found then
+    raise exception 'Pending coin transaction not found';
+  end if;
+end
+$;
+
+revoke all on function public.accf_reject_coin_transaction(bigint) from public;
+grant execute on function public.accf_reject_coin_transaction(bigint) to authenticated;
+
+create or replace function public.accf_update_user_role(
+  p_target_user_id uuid,
+  p_new_role text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $
+declare
+  v_role_type text;
+begin
+  if not public.accf_current_user_has_role(array['admin']) then
+    raise exception 'Admin role required';
+  end if;
+
+  if p_new_role not in ('member', 'admin', 'blog', 'media', 'academics', 'pro', 'finance') then
+    raise exception 'Unsupported role';
+  end if;
+
+  select format_type(a.atttypid, a.atttypmod)
+  into v_role_type
+  from pg_attribute a
+  where a.attrelid = 'public.user_roles'::regclass
+    and a.attname = 'role'
+    and not a.attisdropped;
+
+  if v_role_type is null then
+    raise exception 'user_roles.role column not found';
+  end if;
+
+  execute format(
+    'insert into public.user_roles (user_id, role)
+     values ($1, $2::%s)
+     on conflict (user_id) do update set role = excluded.role',
+    v_role_type
+  )
+  using p_target_user_id, p_new_role;
+end
+$;
+
+revoke all on function public.accf_update_user_role(uuid, text) from public;
+grant execute on function public.accf_update_user_role(uuid, text) to authenticated;
+
+create or replace function public.accf_admin_adjust_coins(
+  p_target_user_id uuid,
+  p_amount integer,
+  p_reason text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $
+declare
+  v_balance integer;
+begin
+  if not public.accf_current_user_has_role(array['admin']) then
+    raise exception 'Admin role required';
+  end if;
+
+  if p_amount = 0 then
+    raise exception 'Adjustment amount must not be zero';
+  end if;
+
+  select coalesce(coins, 0)
+  into v_balance
+  from public.profiles
+  where id = p_target_user_id
+  for update;
+
+  if not found then
+    raise exception 'Target profile not found';
+  end if;
+
+  if v_balance + p_amount < 0 then
+    raise exception 'Adjustment would create a negative balance';
+  end if;
+
+  update public.profiles
+  set coins = v_balance + p_amount
+  where id = p_target_user_id;
+
+  insert into public.coin_transactions (
+    user_id, source_type, source_id, coin_amount, status, reason
+  )
+  values (
+    p_target_user_id,
+    'admin_adjustment',
+    'admin:' || md5(random()::text || clock_timestamp()::text || p_target_user_id::text),
+    p_amount,
+    'approved',
+    nullif(trim(coalesce(p_reason, '')), '')
+  );
+end
+$;
+
+revoke all on function public.accf_admin_adjust_coins(uuid, integer, text) from public;
+grant execute on function public.accf_admin_adjust_coins(uuid, integer, text) to authenticated;
+
+create or replace function public.accf_delete_user_account(p_target_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $
+begin
+  if not public.accf_current_user_has_role(array['admin']) then
+    raise exception 'Admin role required';
+  end if;
+
+  if p_target_user_id = auth.uid() then
+    raise exception 'Administrators cannot delete their own account from this screen';
+  end if;
+
+  delete from auth.users where id = p_target_user_id;
+  if not found then
+    raise exception 'User account not found';
+  end if;
+end
+$;
+
+revoke all on function public.accf_delete_user_account(uuid) from public;
+grant execute on function public.accf_delete_user_account(uuid) to authenticated;
+
+create or replace function public.accf_update_donation_status(
+  p_donation_id uuid,
+  p_new_status text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $
+begin
+  if not public.accf_current_user_has_role(array['admin', 'finance']) then
+    raise exception 'Finance or admin role required';
+  end if;
+
+  if p_new_status = 'confirmed' then
+    update public.donations
+    set status = 'confirmed', confirmed_at = now()
+    where id = p_donation_id;
+  elsif p_new_status = 'rejected' then
+    update public.donations
+    set status = 'rejected', confirmed_at = null
+    where id = p_donation_id;
+  else
+    raise exception 'Unsupported donation status';
+  end if;
+
+  if not found then
+    raise exception 'Donation not found';
+  end if;
+end
+$;
+
+revoke all on function public.accf_update_donation_status(uuid, text) from public;
+grant execute on function public.accf_update_donation_status(uuid, text) to authenticated;
+
+create or replace function public.accf_process_store_redemption(
+  p_purchase_id uuid,
+  p_status text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $
+declare
+  v_purchase record;
+begin
+  if not public.accf_current_user_has_role(array['admin', 'finance']) then
+    raise exception 'Finance or admin role required';
+  end if;
+
+  select *
+  into v_purchase
+  from public.user_store_purchases
+  where id = p_purchase_id
+  for update;
+
+  if not found then
+    raise exception 'Store purchase not found';
+  end if;
+
+  if v_purchase.status <> 'pending' then
+    raise exception 'Store purchase has already been processed';
+  end if;
+
+  if p_status = 'fulfilled' then
+    update public.user_store_purchases
+    set status = 'fulfilled'
+    where id = p_purchase_id;
+  elsif p_status = 'rejected' then
+    update public.user_store_purchases
+    set status = 'rejected'
+    where id = p_purchase_id;
+
+    update public.profiles
+    set coins = coalesce(coins, 0) + v_purchase.cost
+    where id = v_purchase.user_id;
+
+    insert into public.coin_transactions (
+      user_id, source_type, source_id, coin_amount, status, reason
+    )
+    values (
+      v_purchase.user_id,
+      'admin_adjustment',
+      'store-refund:' || p_purchase_id::text,
+      v_purchase.cost,
+      'approved',
+      'Refund for rejected store redemption'
+    )
+    on conflict (user_id, source_type, source_id)
+      where source_id is not null
+    do nothing;
+  else
+    raise exception 'Unsupported redemption status';
+  end if;
+
+  insert into public.notifications (user_id, type, message, link)
+  values (
+    v_purchase.user_id,
+    'system',
+    case when p_status = 'fulfilled'
+      then 'Your store redemption has been fulfilled.'
+      else 'Your store redemption was rejected and your coins were refunded.'
+    end,
+    '/store'
+  );
+end
+$;
+
+revoke all on function public.accf_process_store_redemption(uuid, text) from public;
+grant execute on function public.accf_process_store_redemption(uuid, text) to authenticated;
+
+create or replace function public.accf_approve_material_upload(p_material_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $
+declare
+  v_material record;
+  v_reward integer;
+  v_tx_id bigint;
+begin
+  if not public.accf_current_user_has_role(array['admin', 'academics']) then
+    raise exception 'Academics or admin role required';
+  end if;
+
+  select *
+  into v_material
+  from public.user_course_materials
+  where id = p_material_id
+  for update;
+
+  if not found then
+    raise exception 'Material upload not found';
+  end if;
+
+  if v_material.status = 'approved' then
+    return;
+  end if;
+
+  v_reward := case when v_material.material_type = 'past_question' then 50 else 100 end;
+
+  update public.user_course_materials
+  set status = 'approved'
+  where id = p_material_id;
+
+  insert into public.coin_transactions (
+    user_id, source_type, source_id, coin_amount, status, reason
+  )
+  values (
+    v_material.uploader_id,
+    'task',
+    'material-upload:' || p_material_id::text,
+    v_reward,
+    'approved',
+    'Approved academic material upload'
+  )
+  on conflict (user_id, source_type, source_id)
+    where source_id is not null
+  do nothing
+  returning id into v_tx_id;
+
+  if v_tx_id is not null then
+    update public.profiles
+    set coins = coalesce(coins, 0) + v_reward
+    where id = v_material.uploader_id;
+  end if;
+end
+$;
+
+revoke all on function public.accf_approve_material_upload(uuid) from public;
+grant execute on function public.accf_approve_material_upload(uuid) to authenticated;
+
+create or replace function public.accf_purchase_store_item(
+  p_item_id uuid,
+  p_metadata jsonb default '{}'::jsonb
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $
+declare
+  v_user_id uuid := auth.uid();
+  v_item record;
+  v_balance integer;
+  v_purchase_id uuid;
+begin
+  if v_user_id is null then
+    raise exception 'Authentication required';
+  end if;
+
+  select * into v_item
+  from public.store_items
+  where id = p_item_id;
+
+  if not found then
+    raise exception 'Store item not found';
+  end if;
+
+  select coalesce(coins, 0)
+  into v_balance
+  from public.profiles
+  where id = v_user_id
+  for update;
+
+  if not found then
+    raise exception 'Profile not found';
+  end if;
+
+  if v_balance < v_item.cost then
+    raise exception 'Insufficient coins';
+  end if;
+
+  update public.profiles
+  set coins = v_balance - v_item.cost
+  where id = v_user_id;
+
+  insert into public.user_store_purchases (
+    user_id, item_id, item_name, cost, status, purchase_metadata
+  )
+  values (
+    v_user_id, p_item_id, v_item.name, v_item.cost, 'pending', coalesce(p_metadata, '{}'::jsonb)
+  )
+  returning id into v_purchase_id;
+
+  insert into public.coin_transactions (
+    user_id, source_type, source_id, coin_amount, status, reason
+  )
+  values (
+    v_user_id,
+    'store_purchase',
+    'store:' || v_purchase_id::text,
+    -v_item.cost,
+    'approved',
+    'Store purchase: ' || v_item.name
+  );
+
+  return v_purchase_id;
+end
+$;
+
+revoke all on function public.accf_purchase_store_item(uuid, jsonb) from public;
+grant execute on function public.accf_purchase_store_item(uuid, jsonb) to authenticated;
+
 -- Block direct browser writes to reward ledgers. Trusted SECURITY DEFINER RPCs
 -- above remain able to write as their function owner.
 revoke insert, update, delete on public.coin_transactions from anon, authenticated;
@@ -682,7 +1078,7 @@ begin
     from pg_proc p
     join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public'
-      and p.proname in ('approve_coin_transaction', 'assign_task_to_all_users', 'increment_coins', 'update_user_streak')
+      and p.proname in ('approve_coin_transaction', 'assign_task_to_all_users', 'increment_coins', 'update_user_streak', 'update_user_role', 'admin_adjust_coins', 'delete_user_account', 'update_donation_status', 'process_store_redemption', 'approve_material_upload', 'purchase_store_item')
   loop
     execute format('revoke execute on function %s from public, anon, authenticated', fn.signature);
   end loop;
