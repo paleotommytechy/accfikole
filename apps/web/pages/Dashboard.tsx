@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
+import { authenticatedFetch } from '../lib/apiClient';
 // FIX: Use wildcard import for react-router-dom to resolve module export errors.
 import * as ReactRouterDOM from 'react-router-dom';
 const { Link } = ReactRouterDOM;
@@ -110,7 +111,7 @@ const ScriptureOfTheDay: React.FC = () => {
                 setLoading(false);
 
                 try {
-                    const response = await fetch('/api/daily-scripture', { method: 'POST' });
+                    const response = await authenticatedFetch('/api/daily-scripture', { method: 'POST' });
                     
                     if (!response.ok) {
                         throw new Error('Failed to fetch scripture');
