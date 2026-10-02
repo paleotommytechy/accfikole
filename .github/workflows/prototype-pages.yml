@@ -19,10 +19,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Prototype
+      - name: Checkout pushed Prototype commit
         uses: actions/checkout@v4
-        with:
-          ref: Prototype
 
       - name: Setup Node.js 24
         uses: actions/setup-node@v4
