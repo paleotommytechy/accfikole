@@ -99,10 +99,7 @@ const UserManagement: React.FC = () => {
         // Update role via RPC
         const newRole = selectedUser.role;
         if (newRole) {
-             const { error: roleError } = await supabase.rpc('update_user_role', {
-                target_user_id: selectedUser.id,
-                new_role: newRole
-            });
+             const { error: roleError } = await supabase.rpc('accf_update_user_role', { p_target_user_id: selectedUser.id, p_new_role: newRole });
             if (roleError) {
                 addToast('Error updating role: ' + roleError.message, 'error');
                 return;
@@ -117,11 +114,7 @@ const UserManagement: React.FC = () => {
     const handleAdjustCoins = async () => {
         if (!supabase || !selectedUser || coinAdjustment.amount === 0) return;
 
-        const { error } = await supabase.rpc('admin_adjust_coins', {
-            target_user_id: selectedUser.id,
-            amount: coinAdjustment.amount,
-            reason: coinAdjustment.reason
-        });
+        const { error } = await supabase.rpc('accf_admin_adjust_coins', { p_target_user_id: selectedUser.id, p_amount: coinAdjustment.amount, p_reason: coinAdjustment.reason });
 
         if (error) {
             addToast('Error adjusting coins: ' + error.message, 'error');
@@ -136,7 +129,7 @@ const UserManagement: React.FC = () => {
         if (!supabase) return;
         
         showConfirm(`Are you sure you want to permanently delete ${user.full_name || user.email}? This action is irreversible.`, async () => {
-            const { error } = await supabase.rpc('delete_user_account', { target_user_id: user.id });
+            const { error } = await supabase.rpc('accf_delete_user_account', { p_target_user_id: user.id });
             if (error) {
                 addToast('Error deleting user: ' + error.message, 'error');
             } else {
