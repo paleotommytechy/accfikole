@@ -5,6 +5,7 @@ import { BookOpenIcon, XIcon, SendIcon, SparklesIcon } from '../ui/Icons';
 import Avatar from '../auth/Avatar';
 import { useAppContext } from '../../context/AppContext';
 import { renderSafeMarkdown } from '../../lib/markdown';
+import { authenticatedFetch } from '../../lib/apiClient';
 interface ChatMessage {
     sender: 'user' | 'ai';
     text: string;
@@ -56,7 +57,7 @@ const StudyPlanner: React.FC<StudyPlannerProps> = ({ allCourses }) => {
         const courseContext = findCourseContext(prompt);
 
         try {
-            const response = await fetch('/api/generate-study-plan', {
+            const response = await authenticatedFetch('/api/generate-study-plan', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ userPrompt: prompt, courseContext }),
