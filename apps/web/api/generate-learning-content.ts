@@ -91,6 +91,7 @@ export default async function handler(req: any, res: any) {
       model: "gemini-3-flash-preview",
       contents: { parts },
       config: {
+        httpOptions: { timeout: 30_000 },
         responseMimeType: "application/json",
         responseSchema,
       }
