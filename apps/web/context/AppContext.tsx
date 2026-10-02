@@ -88,7 +88,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const { data: roleData, error: roleError } = roleResponse;
         if (roleError) console.error('Error checking user role:', roleError.message);
         
-        const userRole = roleData?.role || 'member';
+        let userRole = roleData?.role || 'member';
         
         const { data: profile, error: profileError } = profileResponse;
         if (profileError) {
@@ -104,36 +104,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setIsProfileComplete(false);
           }
         } else {
-          // --- Onboarding flow for NEW users (profile doesn't exist) ---
-          console.log("No profile found for this user. Attempting to create one on the client-side.");
-          
-          const newProfileData = {
-              id: user.id,
-              email: user.email,
-              full_name: user.user_metadata?.full_name || user.user_metadata?.name,
-              avatar_url: user.user_metadata?.avatar_url,
-          };
+          // --- Atomic onboarding flow for NEW users ---
+          // The database function uses auth.uid() as the identity source and creates
+          // profile/role/onboarding rows in one transaction.
+          const { error: bootstrapError } = await supabase.rpc('accf_bootstrap_current_user', {
+            p_email: user.email || '',
+            p_full_name: user.user_metadata?.full_name || user.user_metadata?.name || null,
+            p_avatar_url: user.user_metadata?.avatar_url || null,
+          });
 
-          const { data: createdProfile, error: createError } = await supabase
-              .from('profiles')
-              .insert(newProfileData)
-              .select()
-              .single();
-
-          if (createError) {
-              console.error("CRITICAL: Failed to create profile on client-side:", createError.message);
-              GetNotifier().addToast("A critical error occurred while setting up your account. Please try logging in again.", "error");
-              await supabase.auth.signOut();
-              return; // Exit
+          if (bootstrapError) {
+            console.error("CRITICAL: Failed to bootstrap account:", bootstrapError.message);
+            GetNotifier().addToast("A critical error occurred while setting up your account. Please try logging in again.", "error");
+            await supabase.auth.signOut();
+            return;
           }
-          
-          // Also create the user_role and onboarding_progress records. These are less critical.
-          await supabase.from('user_roles').insert({ user_id: user.id, role: 'member' });
-          await supabase.from('onboarding_progress').insert({ user_id: user.id });
 
-          console.log("Client-side profile creation successful:", createdProfile);
-          setCurrentUser({ ...(createdProfile as any), role: 'member' });
-          setIsProfileComplete(false); // New profile is incomplete by default
+          const [createdProfileResponse, createdRoleResponse] = await Promise.all([
+            supabase
+              .from('profiles')
+              .select('id, full_name, avatar_url, fellowship_position, level, department, gender, dob, whatsapp, hotline, email, coins, current_streak, longest_streak')
+              .eq('id', user.id)
+              .single(),
+            supabase
+              .from('user_roles')
+              .select('role')
+              .eq('user_id', user.id)
+              .maybeSingle(),
+          ]);
+
+          if (createdProfileResponse.error || !createdProfileResponse.data) {
+            throw createdProfileResponse.error || new Error('Profile bootstrap completed without a profile row.');
+          }
+
+          if (createdRoleResponse.error) {
+            throw createdRoleResponse.error;
+          }
+
+          userRole = createdRoleResponse.data?.role || 'member';
+          setCurrentUser({ ...(createdProfileResponse.data as any), role: userRole });
+          setIsProfileComplete(false);
         }
 
         const isAdminStatus = userRole === 'admin';
