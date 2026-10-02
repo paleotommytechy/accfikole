@@ -9,7 +9,7 @@ import { ArrowLeftIcon, InformationCircleIcon, EmojiIcon, PaperclipIcon, SendIco
 import type { Message, UserProfile } from '../types';
 import { supabase } from '../lib/supabaseClient';
 import { useNotifier } from '../context/NotificationContext';
-import EmojiPicker from 'emoji-picker-react';
+import EmojiPicker, { Theme } from 'emoji-picker-react';
 
 const AudioPlayer: React.FC<{ src: string }> = ({ src }) => {
     const audioRef = useRef<HTMLAudioElement>(null);
@@ -197,7 +197,7 @@ const ChatConversation: React.FC = () => {
 
             {showEmojiPicker && (
                 <div ref={emojiPickerRef} className="absolute bottom-20 left-4 right-4 z-50 shadow-2xl animate-spring-up">
-                    <EmojiPicker onEmojiClick={(data) => setNewMessage(prev => prev + data.emoji)} width="100%" theme={currentUser ? 'auto' : 'light'} />
+                    <EmojiPicker onEmojiClick={(data) => setNewMessage(prev => prev + data.emoji)} width="100%" theme={currentUser ? Theme.AUTO : Theme.LIGHT} />
                 </div>
             )}
         </div>
