@@ -91,7 +91,7 @@ as $$
 declare
   v_user_id uuid := auth.uid();
   v_eligible boolean := false;
-  v_inserted boolean := false;
+  v_inserted_count integer := 0;
 begin
   if v_user_id is null then
     raise exception 'Authentication required';
@@ -159,8 +159,8 @@ begin
     where source_id is not null
   do nothing;
 
-  get diagnostics v_inserted = row_count;
-  return v_inserted;
+  get diagnostics v_inserted_count = row_count;
+  return v_inserted_count > 0;
 end
 $$;
 
@@ -180,7 +180,7 @@ declare
   v_user_id uuid := auth.uid();
   v_task_id uuid;
   v_reward integer;
-  v_inserted boolean := false;
+  v_inserted_count integer := 0;
 begin
   if v_user_id is null then
     raise exception 'Authentication required';
@@ -234,7 +234,7 @@ declare
   v_user_id uuid := auth.uid();
   v_reward integer;
   v_has_quiz boolean;
-  v_inserted boolean := false;
+  v_inserted_count integer := 0;
 begin
   if v_user_id is null then
     raise exception 'Authentication required';
@@ -336,8 +336,8 @@ begin
 
   if v_total <> cardinality(p_question_ids)
      or v_total <> (
-       select count(distinct question_id)::integer
-       from unnest(p_question_ids) as question_id
+       select count(distinct q.question_id)::integer
+       from unnest(p_question_ids) as q(question_id)
      ) then
     raise exception 'Quiz submission does not match the current question set';
   end if;
@@ -480,7 +480,7 @@ as $$
 declare
   v_user_id uuid := auth.uid();
   v_title text;
-  v_inserted boolean := false;
+  v_inserted_count integer := 0;
 begin
   if v_user_id is null then
     raise exception 'Authentication required';
@@ -506,8 +506,8 @@ begin
     where source_id is not null
   do nothing;
 
-  get diagnostics v_inserted = row_count;
-  return v_inserted;
+  get diagnostics v_inserted_count = row_count;
+  return v_inserted_count > 0;
 end
 $$;
 
