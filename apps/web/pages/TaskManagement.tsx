@@ -110,7 +110,7 @@ const CoinApprovalManager: React.FC = () => {
 
         try {
             if (status === 'approved') {
-                const { error: rpcError } = await supabase.rpc('approve_coin_transaction', { p_transaction_id: transactionId });
+                const { error: rpcError } = await supabase.rpc('accf_approve_coin_transaction', { p_transaction_id: transactionId });
                 if (rpcError) throw rpcError;
 
                 const notificationMessage = `Your reward of ${coin_amount} coins for completing "${getSourceName(transaction)}" has been approved!`;
@@ -468,7 +468,7 @@ const TaskManager: React.FC = () => {
         const assignTask = async () => {
             setAssigningTaskId(id);
             try {
-                const { error } = await supabase.rpc('assign_task_to_all_users', { task_id_to_assign: id });
+                const { error } = await supabase.rpc('accf_assign_task_to_all_users', { p_task_id: id });
                 if (error) throw error;
                 addToast('Task assigned successfully to all users for today.', 'success');
             } catch (error: any) {
