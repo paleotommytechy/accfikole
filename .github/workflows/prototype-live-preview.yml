@@ -22,10 +22,8 @@ jobs:
     timeout-minutes: 25
 
     steps:
-      - name: Checkout Prototype
+      - name: Checkout exact workflow candidate
         uses: actions/checkout@v4
-        with:
-          ref: Prototype
 
       - name: Setup Node.js 24
         uses: actions/setup-node@v4
