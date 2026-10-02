@@ -129,14 +129,8 @@ const PendingUploadsManager: React.FC = () => {
         }
 
         setProcessingId(upload.id);
-        const reward = upload.material_type === 'past_question' ? 50 : 100;
-
-        try {
-            const { error } = await supabase.rpc('approve_material_upload', {
-                p_material_id: upload.id,
-                p_admin_id: currentUser.id,
-                p_coin_reward: reward
-            });
+try {
+            const { error } = await supabase.rpc('accf_approve_material_upload', { p_material_id: upload.id });
 
             if (error) throw error;
 
