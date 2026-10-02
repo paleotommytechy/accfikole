@@ -10,6 +10,7 @@ import { UserCourseMaterial, MaterialQuizQuestion } from '../../types';
 import { renderSafeMarkdown } from '../../lib/markdown';
 import { PDFDocument } from 'pdf-lib';
 import { useNavigate } from 'react-router-dom';
+import { authenticatedFetch } from '../../lib/apiClient';
 
 interface MaterialQuizModalProps {
     material: UserCourseMaterial;
@@ -164,7 +165,7 @@ const MaterialQuizModal: React.FC<MaterialQuizModalProps> = ({ material, onClose
 
     // Helper to safely fetch JSON even if response is not ok
     const safeFetchJSON = async (url: string, body: any) => {
-        const response = await fetch(url, {
+        const response = await authenticatedFetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
