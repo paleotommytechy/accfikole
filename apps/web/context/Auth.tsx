@@ -203,4 +203,14 @@ const InputField: React.FC<InputFieldProps> = ({ icon, rightContent, ...props })
         </div>
         <input
             {...props}
-            className="w-full bg-white/70 shadow-inner border border-transparent rounded-lg pl-10 pr-10 py-3 text-gray-900 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border
+            className="w-full bg-white/70 shadow-inner border border-transparent rounded-lg pl-10 pr-10 py-3 text-gray-900 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+        />
+        {rightContent && (
+             <div className="absolute inset-y-0 right-0 pr-3 flex items-center">
+                {rightContent}
+            </div>
+        )}
+    </div>
+);
+
+export default Auth;
