@@ -7,7 +7,7 @@ import Card from '../ui/Card';
 import Button from '../ui/Button';
 import { XIcon, SparklesIcon, CheckCircleIcon, XCircleIcon, LightBulbIcon, PencilAltIcon, PaperclipIcon, ArrowLeftIcon, ArrowUpIcon, ClockIcon, FireIcon } from '../ui/Icons';
 import { UserCourseMaterial, MaterialQuizQuestion } from '../../types';
-import { marked } from 'marked';
+import { renderSafeMarkdown } from '../../lib/markdown';
 import { PDFDocument } from 'pdf-lib';
 import { useNavigate } from 'react-router-dom';
 
@@ -469,7 +469,7 @@ const MaterialQuizModal: React.FC<MaterialQuizModalProps> = ({ material, onClose
                                 </h4>
                                 <div 
                                     className="prose prose-sm dark:prose-invert max-w-none text-sm text-gray-800 dark:text-gray-200"
-                                    dangerouslySetInnerHTML={{ __html: marked.parse(tips) }}
+                                    dangerouslySetInnerHTML={{ __html: renderSafeMarkdown(tips) }}
                                 ></div>
                             </div>
                         )}
