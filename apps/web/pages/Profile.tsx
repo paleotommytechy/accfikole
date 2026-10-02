@@ -160,32 +160,17 @@ const Profile: React.FC = () => {
         
         addToast('Profile saved successfully!', 'success');
         
-        // --- ONBOARDING LOGIC ---
         const isNowComplete = updateData.full_name && updateData.department && updateData.whatsapp;
         if (isNowComplete) {
-            try {
-                const { data: onboarding, error: onboardingError } = await supabase
-                    .from('onboarding_progress')
-                    .select('completed_profile')
-                    .eq('user_id', currentUser.id)
-                    .maybeSingle();
+            const { data: rewardCreated, error: onboardingError } = await supabase.rpc(
+                'accf_claim_onboarding_reward',
+                { p_action: 'profile_completion' }
+            );
 
-                if (onboardingError && onboardingError.code !== '42P01') {
-                    console.error("Could not check onboarding status:", onboardingError);
-                } else if (onboarding && !onboarding.completed_profile) {
-                    await supabase.from('onboarding_progress').update({ completed_profile: true }).eq('user_id', currentUser.id);
-                    await supabase.from('coin_transactions').insert({
-                        user_id: currentUser.id,
-                        source_type: 'onboarding',
-                        source_id: 'profile_completion',
-                        coin_amount: 25,
-                        status: 'pending',
-                        reason: 'Completed profile'
-                    });
-                    addToast('Onboarding task complete! 25 coins are pending approval.', 'success');
-                }
-            } catch (e) {
-                console.warn("Onboarding feature not available. Table might be missing.", e);
+            if (onboardingError) {
+                console.error("Could not claim profile onboarding reward:", onboardingError);
+            } else if (rewardCreated) {
+                addToast('Onboarding task complete! 25 coins are pending approval.', 'success');
             }
         }
         
