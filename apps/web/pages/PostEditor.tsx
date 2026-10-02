@@ -8,6 +8,7 @@ import type { Post } from '../types';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import { CloudUploadIcon } from '../components/ui/Icons';
+import { authenticatedFetch } from '../lib/apiClient';
 
 const AutoSaveField = lazy(() => import('../components/ui/AutoSaveField'));
 const InputLoadingSkeleton = () => <div className="w-full h-10 bg-gray-100 dark:bg-gray-800 rounded-md animate-pulse"></div>;
@@ -79,7 +80,7 @@ const PostEditor: React.FC = () => {
         }
         setIsGeneratingImage(true);
         try {
-            const apiResponse = await fetch('/api/generate-image', {
+            const apiResponse = await authenticatedFetch('/api/generate-image', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ prompt: post.title }),
