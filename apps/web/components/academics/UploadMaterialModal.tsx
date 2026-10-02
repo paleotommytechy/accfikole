@@ -6,6 +6,7 @@ import { useNotifier } from '../../context/NotificationContext';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import { CloudUploadIcon, XIcon, CheckCircleIcon, SparklesIcon } from '../ui/Icons';
+import { authenticatedFetch } from '../../lib/apiClient';
 
 interface UploadMaterialModalProps {
     onClose: () => void;
@@ -85,7 +86,7 @@ const UploadMaterialModal: React.FC<UploadMaterialModalProps> = ({ onClose }) =>
             });
 
             // Call secure server-side endpoint
-            const response = await fetch('/api/analyze-document', {
+            const response = await authenticatedFetch('/api/analyze-document', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ fileData: base64Data, mimeType: imageFile.type })
