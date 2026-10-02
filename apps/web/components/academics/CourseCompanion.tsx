@@ -5,6 +5,7 @@ import { ChatIcon, XIcon, SendIcon, CloudUploadIcon } from '../ui/Icons';
 import Avatar from '../auth/Avatar';
 import { useAppContext } from '../../context/AppContext';
 import { renderSafeMarkdown } from '../../lib/markdown';
+import { authenticatedFetch } from '../../lib/apiClient';
 interface ChatMessage {
     sender: 'user' | 'ai';
     text: string;
@@ -101,7 +102,7 @@ const CourseCompanion: React.FC<CourseCompanionProps> = ({ allCourses }) => {
                 apiBody.courseContext = findCourseContext(prompt);
             }
             
-            const response = await fetch('/api/course-companion', {
+            const response = await authenticatedFetch('/api/course-companion', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(apiBody),
