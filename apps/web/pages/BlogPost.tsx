@@ -10,8 +10,7 @@ import Card from '../components/ui/Card';
 import Avatar from '../components/auth/Avatar';
 import Button from '../components/ui/Button';
 import { HeartIcon, ChatIcon, ShareIcon, BookmarkIcon, SendIcon } from '../components/ui/Icons';
-import { marked } from 'marked';
-
+import { renderSafeMarkdown } from '../lib/markdown';
 const AutoSaveField = lazy(() => import('../components/ui/AutoSaveField'));
 const EditorLoadingSkeleton = () => <div className="w-full h-24 bg-gray-100 dark:bg-gray-800 rounded-lg animate-pulse"></div>;
 
@@ -239,7 +238,7 @@ const BlogPost: React.FC = () => {
                 </header>
                 <div 
                     className="prose dark:prose-invert max-w-none"
-                    dangerouslySetInnerHTML={{ __html: marked.parse(post.content) }}
+                    dangerouslySetInnerHTML={{ __html: renderSafeMarkdown(post.content) }}
                 >
                 </div>
             </article>
