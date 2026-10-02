@@ -333,33 +333,35 @@ const MaterialQuizModal: React.FC<MaterialQuizModalProps> = ({ material, onClose
     };
 
     const calculateScoreAndFinish = async () => {
-        const score = userAnswers.reduce((acc, answer, index) => {
-            return answer === quizQuestions[index].correct_option_index ? acc + 1 : acc;
-        }, 0);
-        
+        if (!currentUser || !supabase || !quizId) return;
+        if (userAnswers.some(answer => answer < 0)) {
+            addToast('Please answer every question before submitting.', 'error');
+            return;
+        }
+
+        const { data, error } = await supabase.rpc('accf_submit_material_quiz', {
+            p_quiz_id: quizId,
+            p_question_ids: quizQuestions.map(question => question.id),
+            p_answers: userAnswers,
+        });
+
+        if (error) {
+            addToast('Could not submit quiz: ' + error.message, 'error');
+            return;
+        }
+
+        const result = Array.isArray(data) ? data[0] : data;
+        if (!result) {
+            addToast('Quiz submission returned no result.', 'error');
+            return;
+        }
+
+        const score = Number(result.score);
         setFinalScore(score);
         setIsFinished(true);
 
-        if (!currentUser || !supabase || !quizId) return;
-
-        await supabase.from('material_quiz_attempts').insert({
-            quiz_id: quizId,
-            user_id: currentUser.id,
-            score: score,
-            total_questions: quizQuestions.length
-        });
-        
-        if (score === quizQuestions.length) {
-             await supabase.from('coin_transactions').insert({
-                user_id: currentUser.id,
-                source_type: 'task',
-                source_id: quizId,
-                coin_amount: 10,
-                status: 'approved',
-                reason: `Perfect score on ${material.title} quiz`
-            });
-            await supabase.rpc('increment_coins', { amount: 10, user_id: currentUser.id });
-            addToast("Perfect Score! You earned 10 coins.", 'success');
+        if (result.perfect) {
+            addToast('Perfect Score! You earned 10 coins.', 'success');
         }
     };
 
