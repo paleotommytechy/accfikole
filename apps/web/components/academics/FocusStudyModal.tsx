@@ -49,16 +49,16 @@ const FocusStudyModal: React.FC<FocusStudyModalProps> = ({ material, onClose }) 
         if (!currentUser || !supabase || isProcessingReward) return;
         setIsProcessingReward(true);
         try {
-            const { error } = await supabase.from('coin_transactions').insert({
-                user_id: currentUser.id,
-                source_type: 'task',
-                source_id: material.id,
-                coin_amount: COIN_REWARD,
-                status: 'pending',
-                reason: `Focus Session: ${material.title}`
-            });
+            const { data: rewardCreated, error } = await supabase.rpc(
+                'accf_claim_focus_material_reward',
+                { p_material_id: material.id }
+            );
             if (error) throw error;
-            addToast(`Session Complete! +${COIN_REWARD} coins pending.`, 'success');
+            if (rewardCreated) {
+                addToast(`Session Complete! +${COIN_REWARD} coins pending.`, 'success');
+            } else {
+                addToast('This focus-session reward has already been claimed.', 'info');
+            }
             onClose();
         } catch (error: any) {
             addToast(error.message, 'error');
