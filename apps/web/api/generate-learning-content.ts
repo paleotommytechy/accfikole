@@ -1,6 +1,12 @@
 import { GoogleGenAI, Type } from "@google/genai";
+import {
+  getGeminiApiKey,
+  requireAiUser,
+  sendSafeApiError,
+  validateInlineFile,
+  validateText,
+} from "./_security";
 
-// Increase body size limit for file uploads (multimodal analysis)
 export const config = {
   api: {
     bodyParser: {
@@ -15,17 +21,28 @@ export default async function handler(req: any, res: any) {
     return res.status(405).json({ message: 'Only POST requests allowed' });
   }
 
-  try {
-    const { type, content, mimeType, customTopic, courseInfo } = req.body;
+  const user = await requireAiUser(req, res, { maxRequests: 15 });
+  if (!user) return;
 
-    // FIX: Initialize GoogleGenAI with process.env.API_KEY directly as per guidelines
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    
+  try {
+    const type = req.body?.type;
+    if (type !== 'tips' && type !== 'quiz') {
+      return res.status(400).json({ message: 'Unsupported generation type.' });
+    }
+
+    const courseInfo = validateText(req.body?.courseInfo, 'Course information', 1000);
+    const customTopic = typeof req.body?.customTopic === 'string'
+      ? req.body.customTopic.slice(0, 1000)
+      : '';
+    const manualContent = !req.body?.mimeType && typeof req.body?.content === 'string'
+      ? req.body.content.slice(0, 15000)
+      : '';
+
     let prompt = "";
-    let responseSchema: any = null;
+    let responseSchema: any;
 
     if (type === 'tips') {
-      prompt = `Provide exam strategy and study tips for ${courseInfo}. ${customTopic ? `Focus specifically on: ${customTopic}.` : ''} Output as an object with a field "text" containing markdown formatted advice.`;
+      prompt = `Provide exam strategy and study tips for ${courseInfo}. ${customTopic ? `Focus specifically on: ${customTopic}.` : ''} ${manualContent ? `Use this supplied study content as context:\n${manualContent}` : ''} Output as an object with a field "text" containing markdown formatted advice.`;
       responseSchema = {
         type: Type.OBJECT,
         properties: {
@@ -34,7 +51,7 @@ export default async function handler(req: any, res: any) {
         required: ["text"]
       };
     } else {
-      prompt = `Generate 5 multiple choice questions for ${courseInfo}. ${customTopic ? `Focus on: ${customTopic}.` : ''} Each question must have 4 options and one correct_option_index (0-3). Output as JSON.`;
+      prompt = `Generate 5 multiple choice questions for ${courseInfo}. ${customTopic ? `Focus on: ${customTopic}.` : ''} ${manualContent ? `Use this supplied study content as context:\n${manualContent}` : ''} Each question must have 4 options and one correct_option_index (0-3). Output as JSON.`;
       responseSchema = {
         type: Type.OBJECT,
         properties: {
@@ -56,29 +73,34 @@ export default async function handler(req: any, res: any) {
     }
 
     const parts: any[] = [];
-    if (content && mimeType) {
-      // For multimodal analysis (image/PDF)
-      parts.push({ inlineData: { data: content, mimeType } });
+    if (req.body?.mimeType || (req.body?.content && !manualContent)) {
+      const { fileData, mimeType } = validateInlineFile(
+        req.body?.content,
+        req.body?.mimeType,
+        {
+          maxBytes: 3 * 1024 * 1024,
+          allowedMimeTypes: ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'],
+        },
+      );
+      parts.push({ inlineData: { data: fileData, mimeType } });
     }
     parts.push({ text: prompt });
 
+    const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: { parts },
       config: {
         responseMimeType: "application/json",
-        responseSchema: responseSchema
+        responseSchema,
       }
     });
 
-    // FIX: Access response.text property directly as per guidelines
     const jsonStr = response.text?.trim();
-    if (!jsonStr) throw new Error("No response from AI");
+    if (!jsonStr) throw new Error("AI service returned an empty response.");
 
     return res.status(200).json(JSON.parse(jsonStr));
-
-  } catch (error: any) {
-    console.error('Error in learning-content API route:', error);
-    return res.status(500).json({ message: error.message || 'Generation failed.' });
+  } catch (error) {
+    return sendSafeApiError(res, error, 'Learning content generation failed.');
   }
 }
