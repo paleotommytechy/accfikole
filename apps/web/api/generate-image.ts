@@ -25,7 +25,7 @@ export default async function handler(req: any, res: any) {
     const response = await ai.models.generateImages({
       model: 'imagen-4.0-generate-001',
       prompt: `A cinematic, high-quality hero image for a blog post titled: "${prompt}". The image should be visually appealing and relevant to the title. No text in the image.`,
-      config: { numberOfImages: 1 },
+      config: { numberOfImages: 1, httpOptions: { timeout: 30_000 } },
     });
 
     const base64ImageBytes = response.generatedImages?.[0]?.image?.imageBytes;
