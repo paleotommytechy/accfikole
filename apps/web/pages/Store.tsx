@@ -109,11 +109,7 @@ const Store: React.FC = () => {
             : {};
 
         try {
-            const { error } = await supabase.rpc('purchase_store_item', {
-                p_item_id: selectedItem.id,
-                p_user_id: currentUser.id,
-                p_metadata: metadata
-            });
+            const { error } = await supabase.rpc('accf_purchase_store_item', { p_item_id: selectedItem.id, p_metadata: metadata });
 
             if (error) {
                 // Safely handle the error object to extract the message
