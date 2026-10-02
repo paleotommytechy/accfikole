@@ -20,6 +20,7 @@ export default async function handler(req: any, res: any) {
       model: 'gemini-3-flash-preview',
       contents: "Provide a single, inspiring and encouraging bible verse for a Christian fellowship dashboard. Your response must be only the JSON object, with no extra text or markdown.",
       config: {
+        httpOptions: { timeout: 30_000 },
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
