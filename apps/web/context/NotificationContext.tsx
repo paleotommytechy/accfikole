@@ -37,9 +37,9 @@ interface NotificationContextType {
 
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
 
-// IMPORTANT: Replace this with your actual VAPID public key from your push service.
-// You can generate one using `npx web-push generate-vapid-keys`
-const VAPID_PUBLIC_KEY = 'BC3Y85YCRqc6T3w3I4yqfK22Z6Qp7q-y0LhJ7aZ2pY6l3d1e0f9g8h7i6j5k4l3m2n1o0p9q8r7s6';
+// Web push remains optional until a trusted sender is configured. In-app
+// realtime notifications continue to work independently of this setting.
+const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY?.trim();
 
 
 function urlBase64ToUint8Array(base64String: string) {
@@ -125,9 +125,14 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
     }
   };
   
-  const subscribeUserToPush = useCallback(async () => {
+  const subscribeUserToPush = useCallback(async (): Promise<boolean> => {
+    if (!VAPID_PUBLIC_KEY) {
+        console.info('Web push is not configured for this deployment.');
+        return false;
+    }
+
     if (!('serviceWorker' in navigator) || !('PushManager' in window) || !supabase || !currentUser) {
-        return;
+        return false;
     }
 
     try {
@@ -136,7 +141,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
 
         if (existingSubscription) {
             await saveSubscription(existingSubscription);
-            return;
+            return true;
         }
 
         const subscription = await registration.pushManager.subscribe({
@@ -145,20 +150,31 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
         });
 
         await saveSubscription(subscription);
-
+        return true;
     } catch (error) {
         console.error('Failed to subscribe the user: ', error);
         addToast('Failed to enable push notifications.', 'error');
+        return false;
     }
-  }, [currentUser, supabase]);
+  }, [currentUser]);
 
 
   const requestNotificationPermission = async () => {
+    if (!('Notification' in window)) {
+        addToast('Push notifications are not supported by this browser.', 'info');
+        return;
+    }
+
+    if (!VAPID_PUBLIC_KEY) {
+        addToast('Web push is not configured on this deployment yet.', 'info');
+        return;
+    }
+
     const permissionResult = await Notification.requestPermission();
     setPermissionStatus(permissionResult);
     if (permissionResult === 'granted') {
-        await subscribeUserToPush();
-        addToast('Push notifications enabled!', 'success');
+        const subscribed = await subscribeUserToPush();
+        if (subscribed) addToast('Push notifications enabled!', 'success');
     } else {
         addToast('Push notifications were not enabled.', 'info');
     }
