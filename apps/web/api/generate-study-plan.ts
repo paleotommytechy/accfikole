@@ -33,6 +33,7 @@ Format the output using Markdown with lists and bold text for clarity. Do not us
     const response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview',
       contents: fullPrompt,
+      config: { httpOptions: { timeout: 30_000 } },
     });
 
     return res.status(200).json({ plan: response.text ?? '' });
