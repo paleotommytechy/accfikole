@@ -43,6 +43,7 @@ export default async function handler(req: any, res: any) {
         ]
       },
       config: {
+        httpOptions: { timeout: 30_000 },
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
