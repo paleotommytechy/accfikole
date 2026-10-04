@@ -1,9 +1,8 @@
 name: Deploy Prototype Preview to GitHub Pages
 
 on:
-  push:
-    branches:
-      - Prototype
+  # GitHub Pages is not enabled for this repository yet. Keep this workflow
+  # manual so normal Prototype validation is not marked failed by Pages setup.
   workflow_dispatch:
 
 permissions:
