@@ -1,10 +1,18 @@
 -- ACCF Ikole production-safe security hardening
 --
--- IMPORTANT:
---   * This migration is additive and does not delete production rows.
---   * Apply it only after 002_tasks_and_roles.sql passes against the live schema.
---   * A duplicate reward record aborts the migration rather than silently
---     deleting or rewriting production history.
+-- This migration was aligned against the live ACCF production schema on
+-- 2026-10-04. It is intentionally backward compatible with the existing
+-- accfikolewebsite-dashboard RPC signatures while introducing safer accf_*
+-- RPCs for the Turborepo Prototype.
+--
+-- It does NOT delete or rewrite existing production rows.
+
+-- Future rewards created by the hardened RPCs use an accf:* idempotency key.
+-- Historical rows are intentionally excluded because production already
+-- contains a legacy duplicate reward that requires a separate business review.
+create unique index if not exists coin_transactions_accf_reward_unique
+  on public.coin_transactions (user_id, source_type, source_id)
+  where source_id like 'accf:%';
 
 create or replace function public.accf_current_user_has_role(allowed_roles text[])
 returns boolean
@@ -17,31 +25,11 @@ as $$
     select 1
     from public.user_roles ur
     where ur.user_id = auth.uid()
-      and ur.role::text = any (allowed_roles)
+      and ur.role = any (allowed_roles)
   );
 $$;
 
-revoke all on function public.accf_current_user_has_role(text[]) from public;
-grant execute on function public.accf_current_user_has_role(text[]) to authenticated;
-
-do $$
-begin
-  if exists (
-    select 1
-    from public.coin_transactions
-    where source_id is not null
-    group by user_id, source_type, source_id
-    having count(*) > 1
-  ) then
-    raise exception
-      'Duplicate coin reward records exist. Reconcile them manually before adding the idempotency index; no rows were changed.';
-  end if;
-end
-$$;
-
-create unique index if not exists coin_transactions_user_source_unique
-  on public.coin_transactions (user_id, source_type, source_id)
-  where source_id is not null;
+revoke all on function public.accf_current_user_has_role(text[]) from public, anon, authenticated;
 
 create or replace function public.accf_bootstrap_current_user(
   p_email text,
@@ -63,7 +51,7 @@ begin
   insert into public.profiles (id, email, full_name, avatar_url)
   values (
     v_user_id,
-    coalesce(nullif(trim(p_email), ''), (select email from auth.users where id = v_user_id)),
+    coalesce(nullif(trim(p_email), ''), (select u.email from auth.users u where u.id = v_user_id)),
     nullif(trim(coalesce(p_full_name, '')), ''),
     nullif(trim(coalesce(p_avatar_url, '')), '')
   )
@@ -79,7 +67,7 @@ begin
 end
 $$;
 
-revoke all on function public.accf_bootstrap_current_user(text, text, text) from public;
+revoke all on function public.accf_bootstrap_current_user(text, text, text) from public, anon;
 grant execute on function public.accf_bootstrap_current_user(text, text, text) to authenticated;
 
 create or replace function public.accf_claim_onboarding_reward(p_action text)
@@ -91,7 +79,8 @@ as $$
 declare
   v_user_id uuid := auth.uid();
   v_eligible boolean := false;
-  v_inserted_count integer := 0;
+  v_source_id text;
+  v_tx_id bigint;
 begin
   if v_user_id is null then
     raise exception 'Authentication required';
@@ -144,11 +133,13 @@ begin
     raise exception 'Onboarding reward requirements are not satisfied';
   end if;
 
+  v_source_id := 'accf:onboarding:' || p_action;
+
   insert into public.coin_transactions (
     user_id, source_type, source_id, coin_amount, status, reason
   )
   values (
-    v_user_id, 'onboarding', p_action, 25, 'pending',
+    v_user_id, 'onboarding', v_source_id, 25, 'pending',
     case p_action
       when 'profile_completion' then 'Completed profile'
       when 'first_rsvp' then 'First event RSVP'
@@ -156,15 +147,15 @@ begin
     end
   )
   on conflict (user_id, source_type, source_id)
-    where source_id is not null
-  do nothing;
+    where source_id like 'accf:%'
+  do nothing
+  returning id into v_tx_id;
 
-  get diagnostics v_inserted_count = row_count;
-  return v_inserted_count > 0;
+  return v_tx_id is not null;
 end
 $$;
 
-revoke all on function public.accf_claim_onboarding_reward(text) from public;
+revoke all on function public.accf_claim_onboarding_reward(text) from public, anon;
 grant execute on function public.accf_claim_onboarding_reward(text) to authenticated;
 
 create or replace function public.accf_set_task_completion(
@@ -180,13 +171,13 @@ declare
   v_user_id uuid := auth.uid();
   v_task_id uuid;
   v_reward integer;
-  v_inserted_count integer := 0;
+  v_tx_id bigint;
 begin
   if v_user_id is null then
     raise exception 'Authentication required';
   end if;
 
-  select ta.task_id, coalesce(t.coin_reward, 0)
+  select ta.task_id, coalesce(t.coin_reward, 0)::integer
   into v_task_id, v_reward
   from public.tasks_assignments ta
   join public.tasks t on t.id = ta.task_id
@@ -194,12 +185,12 @@ begin
     and ta.assignee_id = v_user_id
   for update of ta;
 
-  if v_task_id is null then
+  if not found then
     raise exception 'Task assignment not found for current user';
   end if;
 
   update public.tasks_assignments
-  set status = case when p_complete then 'done' else 'assigned' end,
+  set status = case when p_complete then 'done'::assignment_status else 'assigned'::assignment_status end,
       completed_at = case when p_complete then now() else null end
   where id = p_assignment_id
     and assignee_id = v_user_id;
@@ -209,19 +200,24 @@ begin
       user_id, source_type, source_id, coin_amount, status, reason
     )
     values (
-      v_user_id, 'task', v_task_id::text, v_reward, 'pending', 'Completed task'
+      v_user_id,
+      'task',
+      'accf:task-assignment:' || p_assignment_id::text,
+      v_reward,
+      'pending',
+      'Completed task'
     )
     on conflict (user_id, source_type, source_id)
-      where source_id is not null
-    do nothing;
-    get diagnostics v_inserted = row_count;
+      where source_id like 'accf:%'
+    do nothing
+    returning id into v_tx_id;
   end if;
 
-  return v_inserted;
+  return v_tx_id is not null;
 end
 $$;
 
-revoke all on function public.accf_set_task_completion(uuid, boolean) from public;
+revoke all on function public.accf_set_task_completion(uuid, boolean) from public, anon;
 grant execute on function public.accf_set_task_completion(uuid, boolean) to authenticated;
 
 create or replace function public.accf_complete_weekly_challenge(p_challenge_id uuid)
@@ -234,13 +230,13 @@ declare
   v_user_id uuid := auth.uid();
   v_reward integer;
   v_has_quiz boolean;
-  v_inserted_count integer := 0;
+  v_tx_id bigint;
 begin
   if v_user_id is null then
     raise exception 'Authentication required';
   end if;
 
-  select coalesce(wc.coin_reward, 0), coalesce(wc.has_quiz, false)
+  select coalesce(wc.coin_reward, 0)::integer, coalesce(wc.has_quiz, false)
   into v_reward, v_has_quiz
   from public.weekly_challenges wc
   where wc.id = p_challenge_id;
@@ -267,19 +263,24 @@ begin
       user_id, source_type, source_id, coin_amount, status, reason
     )
     values (
-      v_user_id, 'challenge', p_challenge_id::text, v_reward, 'pending', 'Completed weekly challenge'
+      v_user_id,
+      'challenge',
+      'accf:challenge:' || p_challenge_id::text,
+      v_reward,
+      'pending',
+      'Completed weekly challenge'
     )
     on conflict (user_id, source_type, source_id)
-      where source_id is not null
-    do nothing;
-    get diagnostics v_inserted = row_count;
+      where source_id like 'accf:%'
+    do nothing
+    returning id into v_tx_id;
   end if;
 
-  return v_inserted;
+  return v_tx_id is not null;
 end
 $$;
 
-revoke all on function public.accf_complete_weekly_challenge(uuid) from public;
+revoke all on function public.accf_complete_weekly_challenge(uuid) from public, anon;
 grant execute on function public.accf_complete_weekly_challenge(uuid) to authenticated;
 
 create or replace function public.accf_submit_weekly_quiz(
@@ -311,7 +312,7 @@ begin
     raise exception 'Invalid quiz submission';
   end if;
 
-  select q.challenge_id, q.pass_threshold, coalesce(q.coin_reward, 0), coalesce(wc.coin_reward, 0)
+  select q.challenge_id, q.pass_threshold, coalesce(q.coin_reward, 0), coalesce(wc.coin_reward, 0)::integer
   into v_challenge_id, v_threshold, v_quiz_reward, v_challenge_reward
   from public.quizzes q
   join public.weekly_challenges wc on wc.id = q.challenge_id
@@ -336,8 +337,8 @@ begin
 
   if v_total <> cardinality(p_question_ids)
      or v_total <> (
-       select count(distinct q.question_id)::integer
-       from unnest(p_question_ids) as q(question_id)
+       select count(distinct submitted.question_id)::integer
+       from unnest(p_question_ids) as submitted(question_id)
      ) then
     raise exception 'Quiz submission does not match the current question set';
   end if;
@@ -366,10 +367,15 @@ begin
         user_id, source_type, source_id, coin_amount, status, reason
       )
       values (
-        v_user_id, 'quiz', p_quiz_id::text, v_quiz_reward, 'pending', 'Passed weekly challenge quiz'
+        v_user_id,
+        'quiz',
+        'accf:quiz:' || p_quiz_id::text,
+        v_quiz_reward,
+        'pending',
+        'Passed weekly challenge quiz'
       )
       on conflict (user_id, source_type, source_id)
-        where source_id is not null
+        where source_id like 'accf:%'
       do nothing;
     end if;
 
@@ -378,10 +384,15 @@ begin
         user_id, source_type, source_id, coin_amount, status, reason
       )
       values (
-        v_user_id, 'challenge', v_challenge_id::text, v_challenge_reward, 'pending', 'Completed weekly challenge'
+        v_user_id,
+        'challenge',
+        'accf:challenge:' || v_challenge_id::text,
+        v_challenge_reward,
+        'pending',
+        'Completed weekly challenge'
       )
       on conflict (user_id, source_type, source_id)
-        where source_id is not null
+        where source_id like 'accf:%'
       do nothing;
     end if;
   end if;
@@ -390,7 +401,7 @@ begin
 end
 $$;
 
-revoke all on function public.accf_submit_weekly_quiz(uuid, uuid[], integer[]) from public;
+revoke all on function public.accf_submit_weekly_quiz(uuid, uuid[], integer[]) from public, anon;
 grant execute on function public.accf_submit_weekly_quiz(uuid, uuid[], integer[]) to authenticated;
 
 create or replace function public.accf_submit_material_quiz(
@@ -429,8 +440,8 @@ begin
 
   if v_total <> cardinality(p_question_ids)
      or v_total <> (
-       select count(distinct question_id)::integer
-       from unnest(p_question_ids) as question_id
+       select count(distinct submitted.question_id)::integer
+       from unnest(p_question_ids) as submitted(question_id)
      ) then
     raise exception 'Quiz submission does not match the current question set';
   end if;
@@ -450,10 +461,15 @@ begin
       user_id, source_type, source_id, coin_amount, status, reason
     )
     values (
-      v_user_id, 'quiz', 'material:' || p_quiz_id::text, 10, 'approved', 'Perfect material quiz score'
+      v_user_id,
+      'quiz',
+      'accf:material-quiz:' || p_quiz_id::text,
+      10,
+      'approved',
+      'Perfect material quiz score'
     )
     on conflict (user_id, source_type, source_id)
-      where source_id is not null
+      where source_id like 'accf:%'
     do nothing
     returning id into v_tx_id;
 
@@ -468,7 +484,7 @@ begin
 end
 $$;
 
-revoke all on function public.accf_submit_material_quiz(uuid, uuid[], integer[]) from public;
+revoke all on function public.accf_submit_material_quiz(uuid, uuid[], integer[]) from public, anon;
 grant execute on function public.accf_submit_material_quiz(uuid, uuid[], integer[]) to authenticated;
 
 create or replace function public.accf_claim_focus_material_reward(p_material_id uuid)
@@ -480,7 +496,7 @@ as $$
 declare
   v_user_id uuid := auth.uid();
   v_title text;
-  v_inserted_count integer := 0;
+  v_tx_id bigint;
 begin
   if v_user_id is null then
     raise exception 'Authentication required';
@@ -500,18 +516,23 @@ begin
     user_id, source_type, source_id, coin_amount, status, reason
   )
   values (
-    v_user_id, 'task', 'focus:' || p_material_id::text, 10, 'pending', 'Focus Session: ' || v_title
+    v_user_id,
+    'task',
+    'accf:focus:' || p_material_id::text,
+    10,
+    'pending',
+    'Focus Session: ' || v_title
   )
   on conflict (user_id, source_type, source_id)
-    where source_id is not null
-  do nothing;
+    where source_id like 'accf:%'
+  do nothing
+  returning id into v_tx_id;
 
-  get diagnostics v_inserted_count = row_count;
-  return v_inserted_count > 0;
+  return v_tx_id is not null;
 end
 $$;
 
-revoke all on function public.accf_claim_focus_material_reward(uuid) from public;
+revoke all on function public.accf_claim_focus_material_reward(uuid) from public, anon;
 grant execute on function public.accf_claim_focus_material_reward(uuid) to authenticated;
 
 create or replace function public.accf_approve_coin_transaction(p_transaction_id bigint)
@@ -521,7 +542,7 @@ security definer
 set search_path = public, auth, pg_temp
 as $$
 declare
-  v_tx record;
+  v_tx public.coin_transactions%rowtype;
 begin
   if not public.accf_current_user_has_role(array['admin']) then
     raise exception 'Admin role required';
@@ -558,118 +579,20 @@ begin
     v_tx.user_id,
     'coin_approved',
     'Your coin reward was approved.',
-    '/tasks'
+    '/store'
   );
 end
 $$;
 
-revoke all on function public.accf_approve_coin_transaction(bigint) from public;
+revoke all on function public.accf_approve_coin_transaction(bigint) from public, anon;
 grant execute on function public.accf_approve_coin_transaction(bigint) to authenticated;
-
-create or replace function public.accf_assign_task_to_all_users(p_task_id uuid)
-returns void
-language plpgsql
-security definer
-set search_path = public, auth, pg_temp
-as $$
-declare
-  user_record record;
-  task_record record;
-begin
-  if not public.accf_current_user_has_role(array['admin']) then
-    raise exception 'Admin role required';
-  end if;
-
-  select * into task_record from public.tasks where id = p_task_id;
-  if not found then
-    raise exception 'Task not found';
-  end if;
-
-  for user_record in
-    select u.id, ur.role::text as role
-    from auth.users u
-    left join public.user_roles ur on u.id = ur.user_id
-  loop
-    if not exists (
-      select 1
-      from public.tasks_assignments ta
-      where ta.assignee_id = user_record.id
-        and ta.task_id = p_task_id
-        and ta.created_at >= date_trunc('day', now())
-        and ta.created_at < date_trunc('day', now()) + interval '1 day'
-    ) then
-      insert into public.tasks_assignments (task_id, assignee_id, status)
-      values (p_task_id, user_record.id, 'assigned');
-
-      if user_record.role is distinct from 'admin' then
-        insert into public.notifications (user_id, type, message, link)
-        values (
-          user_record.id,
-          'task_assigned',
-          'Your daily task "' || task_record.title || '" has been assigned.',
-          '/tasks'
-        );
-      end if;
-    end if;
-  end loop;
-end
-$$;
-
-revoke all on function public.accf_assign_task_to_all_users(uuid) from public;
-grant execute on function public.accf_assign_task_to_all_users(uuid) to authenticated;
-
-create or replace function public.accf_update_current_user_streak()
-returns void
-language plpgsql
-security definer
-set search_path = public, auth, pg_temp
-as $
-declare
-  v_user_id uuid := auth.uid();
-  v_current integer;
-  v_longest integer;
-  v_last date;
-  v_next integer;
-begin
-  if v_user_id is null then
-    raise exception 'Authentication required';
-  end if;
-
-  select coalesce(current_streak, 0), coalesce(longest_streak, 0), last_streak_day::date
-  into v_current, v_longest, v_last
-  from public.profiles
-  where id = v_user_id
-  for update;
-
-  if not found then
-    raise exception 'Profile not found';
-  end if;
-
-  if v_last = current_date then
-    return;
-  elsif v_last = current_date - 1 then
-    v_next := v_current + 1;
-  else
-    v_next := 1;
-  end if;
-
-  update public.profiles
-  set current_streak = v_next,
-      longest_streak = greatest(v_longest, v_next),
-      last_streak_day = current_date
-  where id = v_user_id;
-end
-$;
-
-revoke all on function public.accf_update_current_user_streak() from public;
-grant execute on function public.accf_update_current_user_streak() to authenticated;
 
 create or replace function public.accf_reject_coin_transaction(p_transaction_id bigint)
 returns void
 language plpgsql
 security definer
 set search_path = public, auth, pg_temp
-as $
+as $$
 begin
   if not public.accf_current_user_has_role(array['admin']) then
     raise exception 'Admin role required';
@@ -684,10 +607,129 @@ begin
     raise exception 'Pending coin transaction not found';
   end if;
 end
-$;
+$$;
 
-revoke all on function public.accf_reject_coin_transaction(bigint) from public;
+revoke all on function public.accf_reject_coin_transaction(bigint) from public, anon;
 grant execute on function public.accf_reject_coin_transaction(bigint) to authenticated;
+
+create or replace function public.accf_assign_task_to_all_users(p_task_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+declare
+  v_user record;
+  v_task public.tasks%rowtype;
+begin
+  if not public.accf_current_user_has_role(array['admin']) then
+    raise exception 'Admin role required';
+  end if;
+
+  select * into v_task from public.tasks where id = p_task_id;
+  if not found then
+    raise exception 'Task not found';
+  end if;
+
+  for v_user in
+    select u.id, ur.role
+    from auth.users u
+    left join public.user_roles ur on u.id = ur.user_id
+  loop
+    if not exists (
+      select 1
+      from public.tasks_assignments ta
+      where ta.assignee_id = v_user.id
+        and ta.task_id = p_task_id
+        and ta.created_at >= date_trunc('day', now())
+        and ta.created_at < date_trunc('day', now()) + interval '1 day'
+    ) then
+      insert into public.tasks_assignments (task_id, assignee_id, status)
+      values (p_task_id, v_user.id, 'assigned');
+
+      if v_user.role is distinct from 'admin' then
+        insert into public.notifications (user_id, type, message, link)
+        values (
+          v_user.id,
+          'task_assigned',
+          'Your daily task "' || v_task.title || '" has been assigned.',
+          '/tasks'
+        );
+      end if;
+    end if;
+  end loop;
+end
+$$;
+
+revoke all on function public.accf_assign_task_to_all_users(uuid) from public, anon;
+grant execute on function public.accf_assign_task_to_all_users(uuid) to authenticated;
+
+create or replace function public.accf_update_current_user_streak()
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_today date := (now() at time zone 'utc')::date;
+  v_yesterday date := ((now() at time zone 'utc') - interval '1 day')::date;
+  v_last date;
+  v_total integer;
+  v_completed integer;
+  v_current integer;
+begin
+  if v_user_id is null then
+    raise exception 'Authentication required';
+  end if;
+
+  select count(*)::integer
+  into v_total
+  from public.tasks_assignments ta
+  join public.tasks t on t.id = ta.task_id
+  where ta.assignee_id = v_user_id
+    and t.frequency = 'daily'
+    and (ta.created_at at time zone 'utc')::date = v_today;
+
+  if v_total = 0 then
+    return;
+  end if;
+
+  select count(*)::integer
+  into v_completed
+  from public.tasks_assignments ta
+  join public.tasks t on t.id = ta.task_id
+  where ta.assignee_id = v_user_id
+    and t.frequency = 'daily'
+    and (ta.created_at at time zone 'utc')::date = v_today
+    and ta.status = 'done';
+
+  if v_completed <> v_total then
+    return;
+  end if;
+
+  select coalesce(current_streak, 0), last_streak_day
+  into v_current, v_last
+  from public.profiles
+  where id = v_user_id
+  for update;
+
+  if not found or v_last = v_today then
+    return;
+  end if;
+
+  v_current := case when v_last = v_yesterday then v_current + 1 else 1 end;
+
+  update public.profiles
+  set current_streak = v_current,
+      longest_streak = greatest(coalesce(longest_streak, 0), v_current),
+      last_streak_day = v_today
+  where id = v_user_id;
+end
+$$;
+
+revoke all on function public.accf_update_current_user_streak() from public, anon;
+grant execute on function public.accf_update_current_user_streak() to authenticated;
 
 create or replace function public.accf_update_user_role(
   p_target_user_id uuid,
@@ -697,9 +739,7 @@ returns void
 language plpgsql
 security definer
 set search_path = public, auth, pg_temp
-as $
-declare
-  v_role_type text;
+as $$
 begin
   if not public.accf_current_user_has_role(array['admin']) then
     raise exception 'Admin role required';
@@ -709,28 +749,13 @@ begin
     raise exception 'Unsupported role';
   end if;
 
-  select format_type(a.atttypid, a.atttypmod)
-  into v_role_type
-  from pg_attribute a
-  where a.attrelid = 'public.user_roles'::regclass
-    and a.attname = 'role'
-    and not a.attisdropped;
-
-  if v_role_type is null then
-    raise exception 'user_roles.role column not found';
-  end if;
-
-  execute format(
-    'insert into public.user_roles (user_id, role)
-     values ($1, $2::%s)
-     on conflict (user_id) do update set role = excluded.role',
-    v_role_type
-  )
-  using p_target_user_id, p_new_role;
+  insert into public.user_roles (user_id, role)
+  values (p_target_user_id, p_new_role)
+  on conflict (user_id) do update set role = excluded.role;
 end
-$;
+$$;
 
-revoke all on function public.accf_update_user_role(uuid, text) from public;
+revoke all on function public.accf_update_user_role(uuid, text) from public, anon;
 grant execute on function public.accf_update_user_role(uuid, text) to authenticated;
 
 create or replace function public.accf_admin_adjust_coins(
@@ -742,7 +767,7 @@ returns void
 language plpgsql
 security definer
 set search_path = public, auth, pg_temp
-as $
+as $$
 declare
   v_balance integer;
 begin
@@ -778,15 +803,15 @@ begin
   values (
     p_target_user_id,
     'admin_adjustment',
-    'admin:' || md5(random()::text || clock_timestamp()::text || p_target_user_id::text),
+    'accf:admin-adjustment:' || gen_random_uuid()::text,
     p_amount,
     'approved',
     nullif(trim(coalesce(p_reason, '')), '')
   );
 end
-$;
+$$;
 
-revoke all on function public.accf_admin_adjust_coins(uuid, integer, text) from public;
+revoke all on function public.accf_admin_adjust_coins(uuid, integer, text) from public, anon;
 grant execute on function public.accf_admin_adjust_coins(uuid, integer, text) to authenticated;
 
 create or replace function public.accf_delete_user_account(p_target_user_id uuid)
@@ -794,7 +819,7 @@ returns void
 language plpgsql
 security definer
 set search_path = public, auth, pg_temp
-as $
+as $$
 begin
   if not public.accf_current_user_has_role(array['admin']) then
     raise exception 'Admin role required';
@@ -809,9 +834,9 @@ begin
     raise exception 'User account not found';
   end if;
 end
-$;
+$$;
 
-revoke all on function public.accf_delete_user_account(uuid) from public;
+revoke all on function public.accf_delete_user_account(uuid) from public, anon;
 grant execute on function public.accf_delete_user_account(uuid) to authenticated;
 
 create or replace function public.accf_update_donation_status(
@@ -822,31 +847,56 @@ returns void
 language plpgsql
 security definer
 set search_path = public, auth, pg_temp
-as $
+as $$
+declare
+  v_donation public.donations%rowtype;
+  v_message text;
 begin
   if not public.accf_current_user_has_role(array['admin', 'finance']) then
     raise exception 'Finance or admin role required';
   end if;
 
-  if p_new_status = 'confirmed' then
-    update public.donations
-    set status = 'confirmed', confirmed_at = now()
-    where id = p_donation_id;
-  elsif p_new_status = 'rejected' then
-    update public.donations
-    set status = 'rejected', confirmed_at = null
-    where id = p_donation_id;
-  else
-    raise exception 'Unsupported donation status';
-  end if;
+  select *
+  into v_donation
+  from public.donations
+  where id = p_donation_id
+  for update;
 
   if not found then
     raise exception 'Donation not found';
   end if;
-end
-$;
 
-revoke all on function public.accf_update_donation_status(uuid, text) from public;
+  if p_new_status not in ('confirmed', 'rejected') then
+    raise exception 'Unsupported donation status';
+  end if;
+
+  update public.donations
+  set status = p_new_status,
+      confirmed_at = case when p_new_status = 'confirmed' then now() else null end
+  where id = p_donation_id;
+
+  v_message := case
+    when p_new_status = 'confirmed'
+      then 'Your donation of ₦' || v_donation.amount::text || ' for "' || v_donation.fund_name || '" has been confirmed. Thank you so much for your generosity! God bless you.'
+    else
+      'There was an issue confirming your donation of ₦' || v_donation.amount::text || '. An admin will contact you shortly to clarify.'
+  end;
+
+  insert into public.notifications (user_id, type, message, link, metadata)
+  values (
+    v_donation.user_id,
+    'custom',
+    v_message,
+    '/giving',
+    jsonb_build_object('donationId', p_donation_id)
+  );
+
+  insert into public.messages (sender_id, recipient_id, text)
+  values (auth.uid(), v_donation.user_id, v_message);
+end
+$$;
+
+revoke all on function public.accf_update_donation_status(uuid, text) from public, anon;
 grant execute on function public.accf_update_donation_status(uuid, text) to authenticated;
 
 create or replace function public.accf_process_store_redemption(
@@ -857,9 +907,10 @@ returns void
 language plpgsql
 security definer
 set search_path = public, auth, pg_temp
-as $
+as $$
 declare
-  v_purchase record;
+  v_purchase public.user_store_purchases%rowtype;
+  v_tx_id bigint;
 begin
   if not public.accf_current_user_has_role(array['admin', 'finance']) then
     raise exception 'Finance or admin role required';
@@ -879,41 +930,43 @@ begin
     raise exception 'Store purchase has already been processed';
   end if;
 
-  if p_status = 'fulfilled' then
-    update public.user_store_purchases
-    set status = 'fulfilled'
-    where id = p_purchase_id;
-  elsif p_status = 'rejected' then
-    update public.user_store_purchases
-    set status = 'rejected'
-    where id = p_purchase_id;
+  if p_status not in ('fulfilled', 'rejected') then
+    raise exception 'Unsupported redemption status';
+  end if;
 
-    update public.profiles
-    set coins = coalesce(coins, 0) + v_purchase.cost
-    where id = v_purchase.user_id;
+  update public.user_store_purchases
+  set status = p_status,
+      processed_at = now()
+  where id = p_purchase_id;
 
+  if p_status = 'rejected' then
     insert into public.coin_transactions (
       user_id, source_type, source_id, coin_amount, status, reason
     )
     values (
       v_purchase.user_id,
       'admin_adjustment',
-      'store-refund:' || p_purchase_id::text,
+      'accf:store-refund:' || p_purchase_id::text,
       v_purchase.cost,
       'approved',
       'Refund for rejected store redemption'
     )
     on conflict (user_id, source_type, source_id)
-      where source_id is not null
-    do nothing;
-  else
-    raise exception 'Unsupported redemption status';
+      where source_id like 'accf:%'
+    do nothing
+    returning id into v_tx_id;
+
+    if v_tx_id is not null then
+      update public.profiles
+      set coins = coalesce(coins, 0) + v_purchase.cost
+      where id = v_purchase.user_id;
+    end if;
   end if;
 
   insert into public.notifications (user_id, type, message, link)
   values (
     v_purchase.user_id,
-    'system',
+    'custom',
     case when p_status = 'fulfilled'
       then 'Your store redemption has been fulfilled.'
       else 'Your store redemption was rejected and your coins were refunded.'
@@ -921,9 +974,9 @@ begin
     '/store'
   );
 end
-$;
+$$;
 
-revoke all on function public.accf_process_store_redemption(uuid, text) from public;
+revoke all on function public.accf_process_store_redemption(uuid, text) from public, anon;
 grant execute on function public.accf_process_store_redemption(uuid, text) to authenticated;
 
 create or replace function public.accf_approve_material_upload(p_material_id uuid)
@@ -931,9 +984,9 @@ returns void
 language plpgsql
 security definer
 set search_path = public, auth, pg_temp
-as $
+as $$
 declare
-  v_material record;
+  v_material public.user_course_materials%rowtype;
   v_reward integer;
   v_tx_id bigint;
 begin
@@ -967,13 +1020,13 @@ begin
   values (
     v_material.uploader_id,
     'task',
-    'material-upload:' || p_material_id::text,
+    'accf:material-upload:' || p_material_id::text,
     v_reward,
     'approved',
-    'Approved academic material upload'
+    'Reward for uploading: ' || v_material.title
   )
   on conflict (user_id, source_type, source_id)
-    where source_id is not null
+    where source_id like 'accf:%'
   do nothing
   returning id into v_tx_id;
 
@@ -982,10 +1035,18 @@ begin
     set coins = coalesce(coins, 0) + v_reward
     where id = v_material.uploader_id;
   end if;
-end
-$;
 
-revoke all on function public.accf_approve_material_upload(uuid) from public;
+  insert into public.notifications (user_id, type, message, link)
+  values (
+    v_material.uploader_id,
+    'coin_approved',
+    'Your material "' || v_material.title || '" was approved! You earned ' || v_reward::text || ' coins.',
+    '/academics'
+  );
+end
+$$;
+
+revoke all on function public.accf_approve_material_upload(uuid) from public, anon;
 grant execute on function public.accf_approve_material_upload(uuid) to authenticated;
 
 create or replace function public.accf_purchase_store_item(
@@ -996,10 +1057,10 @@ returns uuid
 language plpgsql
 security definer
 set search_path = public, auth, pg_temp
-as $
+as $$
 declare
   v_user_id uuid := auth.uid();
-  v_item record;
+  v_item public.store_items%rowtype;
   v_balance integer;
   v_purchase_id uuid;
 begin
@@ -1007,12 +1068,18 @@ begin
     raise exception 'Authentication required';
   end if;
 
-  select * into v_item
+  select *
+  into v_item
   from public.store_items
-  where id = p_item_id;
+  where id = p_item_id
+    and coalesce(is_active, true);
 
   if not found then
-    raise exception 'Store item not found';
+    raise exception 'Store item not found or inactive';
+  end if;
+
+  if v_item.cost is null or v_item.cost <= 0 then
+    raise exception 'Store item cost is not configured';
   end if;
 
   select coalesce(coins, 0)
@@ -1047,40 +1114,225 @@ begin
   values (
     v_user_id,
     'store_purchase',
-    'store:' || v_purchase_id::text,
+    'accf:store-purchase:' || v_purchase_id::text,
     -v_item.cost,
     'approved',
-    'Store purchase: ' || v_item.name
+    'Purchased ' || v_item.name
   );
 
   return v_purchase_id;
 end
-$;
+$$;
 
-revoke all on function public.accf_purchase_store_item(uuid, jsonb) from public;
+revoke all on function public.accf_purchase_store_item(uuid, jsonb) from public, anon;
 grant execute on function public.accf_purchase_store_item(uuid, jsonb) to authenticated;
 
--- Block direct browser writes to reward ledgers. Trusted SECURITY DEFINER RPCs
--- above remain able to write as their function owner.
-revoke insert, update, delete on public.coin_transactions from anon, authenticated;
-revoke insert, update on public.quiz_attempts from anon, authenticated;
-revoke insert, update on public.material_quiz_attempts from anon, authenticated;
+-- Keep the production dashboard's existing RPC signatures working, but make
+-- them delegate to the hardened implementations and ignore caller-controlled
+-- identity/reward parameters.
 
--- Remove public/authenticated access to legacy privileged functions by name,
--- regardless of their historical overload signatures. Clients are migrated to
--- the accf_* replacements in this change.
-do $$
-declare
-  fn record;
+create or replace function public.approve_coin_transaction(p_transaction_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
 begin
-  for fn in
-    select p.oid::regprocedure as signature
-    from pg_proc p
-    join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public'
-      and p.proname in ('approve_coin_transaction', 'assign_task_to_all_users', 'increment_coins', 'update_user_streak', 'update_user_role', 'admin_adjust_coins', 'delete_user_account', 'update_donation_status', 'process_store_redemption', 'approve_material_upload', 'purchase_store_item')
-  loop
-    execute format('revoke execute on function %s from public, anon, authenticated', fn.signature);
-  end loop;
+  perform public.accf_approve_coin_transaction(p_transaction_id);
 end
 $$;
+
+create or replace function public.assign_task_to_all_users(task_id_to_assign uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  perform public.accf_assign_task_to_all_users(task_id_to_assign);
+end
+$$;
+
+create or replace function public.update_user_streak(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  if p_user_id is distinct from auth.uid() then
+    raise exception 'Users may update only their own streak';
+  end if;
+  perform public.accf_update_current_user_streak();
+end
+$$;
+
+create or replace function public.update_user_role(target_user_id uuid, new_role text)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  perform public.accf_update_user_role(target_user_id, new_role);
+end
+$$;
+
+create or replace function public.admin_adjust_coins(target_user_id uuid, amount integer, reason text)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  perform public.accf_admin_adjust_coins(target_user_id, amount, reason);
+end
+$$;
+
+create or replace function public.delete_user_account(target_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  perform public.accf_delete_user_account(target_user_id);
+end
+$$;
+
+create or replace function public.update_donation_status(
+  p_donation_id uuid,
+  p_new_status text,
+  p_admin_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  if p_admin_id is distinct from auth.uid() then
+    raise exception 'Caller identity mismatch';
+  end if;
+  perform public.accf_update_donation_status(p_donation_id, p_new_status);
+end
+$$;
+
+create or replace function public.process_store_redemption(
+  p_purchase_id uuid,
+  p_status text,
+  p_admin_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  if p_admin_id is distinct from auth.uid() then
+    raise exception 'Caller identity mismatch';
+  end if;
+  perform public.accf_process_store_redemption(p_purchase_id, p_status);
+end
+$$;
+
+create or replace function public.approve_material_upload(
+  p_material_id uuid,
+  p_admin_id uuid,
+  p_coin_reward integer
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  if p_admin_id is distinct from auth.uid() then
+    raise exception 'Caller identity mismatch';
+  end if;
+  -- p_coin_reward is intentionally ignored; the reward is derived server-side.
+  perform public.accf_approve_material_upload(p_material_id);
+end
+$$;
+
+create or replace function public.purchase_store_item(
+  p_item_id uuid,
+  p_user_id uuid,
+  p_metadata jsonb default '{}'::jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  if p_user_id is distinct from auth.uid() then
+    raise exception 'Users may purchase only for themselves';
+  end if;
+  perform public.accf_purchase_store_item(p_item_id, p_metadata);
+end
+$$;
+
+-- Harden the auth bootstrap trigger that already exists in production.
+create or replace function public.handle_new_user_setup()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  insert into public.profiles (id, full_name, email, avatar_url)
+  values (
+    new.id,
+    new.raw_user_meta_data->>'full_name',
+    new.email,
+    new.raw_user_meta_data->>'avatar_url'
+  )
+  on conflict (id) do nothing;
+
+  insert into public.user_roles (user_id, role)
+  values (new.id, 'member')
+  on conflict (user_id) do nothing;
+
+  insert into public.onboarding_progress (user_id)
+  values (new.id)
+  on conflict (user_id) do nothing;
+
+  return new;
+end
+$$;
+
+revoke all on function public.handle_new_user_setup() from public, anon, authenticated;
+revoke all on function public.handle_new_user() from public, anon, authenticated;
+
+-- Existing dashboard clients call these legacy RPCs as authenticated users.
+-- Anonymous/PUBLIC execution is removed, while authenticated execution remains.
+revoke all on function public.approve_coin_transaction(bigint) from public, anon;
+grant execute on function public.approve_coin_transaction(bigint) to authenticated;
+
+revoke all on function public.assign_task_to_all_users(uuid) from public, anon;
+grant execute on function public.assign_task_to_all_users(uuid) to authenticated;
+
+revoke all on function public.update_user_streak(uuid) from public, anon;
+grant execute on function public.update_user_streak(uuid) to authenticated;
+
+revoke all on function public.update_user_role(uuid, text) from public, anon;
+grant execute on function public.update_user_role(uuid, text) to authenticated;
+
+revoke all on function public.admin_adjust_coins(uuid, integer, text) from public, anon;
+grant execute on function public.admin_adjust_coins(uuid, integer, text) to authenticated;
+
+revoke all on function public.delete_user_account(uuid) from public, anon;
+grant execute on function public.delete_user_account(uuid) to authenticated;
+
+revoke all on function public.update_donation_status(uuid, text, uuid) from public, anon;
+grant execute on function public.update_donation_status(uuid, text, uuid) to authenticated;
+
+revoke all on function public.process_store_redemption(uuid, text, uuid) from public, anon;
+grant execute on function public.process_store_redemption(uuid, text, uuid) to authenticated;
+
+revoke all on function public.approve_material_upload(uuid, uuid, integer) from public, anon;
+grant execute on function public.approve_material_upload(uuid, uuid, integer) to authenticated;
+
+revoke all on function public.purchase_store_item(uuid, uuid, jsonb) from public, anon;
+grant execute on function public.purchase_store_item(uuid, uuid, jsonb) to authenticated;
