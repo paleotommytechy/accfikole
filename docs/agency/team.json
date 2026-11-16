@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "project": "ACCF Ikole",
+  "repository": "paleotommytechy/accfikole",
+  "upstream": "msitarzewski/agency-agents",
+  "upstreamCommit": "8ae6164602c95ca78828b148b9052460ee426885",
+  "branch": "Prototype",
+  "activeEnvironments": [
+    "web"
+  ],
+  "deferredEnvironments": [
+    "android",
+    "ios"
+  ],
+  "instructions": "AGENTS.md",
+  "workflows": "docs/agency/WORKFLOWS.md",
+  "roles": [
+    {
+      "id": "codebase-guide",
+      "profile": ".github/agents/codebase-guide.agent.md",
+      "source": "engineering/engineering-codebase-onboarding-engineer.md"
+    },
+    {
+      "id": "software-architect",
+      "profile": ".github/agents/software-architect.agent.md",
+      "source": "engineering/engineering-software-architect.md"
+    },
+    {
+      "id": "backend-architect",
+      "profile": ".github/agents/backend-architect.agent.md",
+      "source": "engineering/engineering-backend-architect.md"
+    },
+    {
+      "id": "frontend-developer",
+      "profile": ".github/agents/frontend-developer.agent.md",
+      "source": "engineering/engineering-frontend-developer.md"
+    },
+    {
+      "id": "mobile-builder",
+      "profile": ".github/agents/mobile-builder.agent.md",
+      "source": "engineering/engineering-mobile-app-builder.md"
+    },
+    {
+      "id": "appsec-reviewer",
+      "profile": ".github/agents/appsec-reviewer.agent.md",
+      "source": "security/security-appsec-engineer.md"
+    },
+    {
+      "id": "test-automation",
+      "profile": ".github/agents/test-automation.agent.md",
+      "source": "testing/testing-test-automation-engineer.md"
+    },
+    {
+      "id": "reality-checker",
+      "profile": ".github/agents/reality-checker.agent.md",
+      "source": "testing/testing-reality-checker.md"
+    }
+  ],
+  "pipelines": {
+    "feature": [
+      "codebase-guide",
+      "software-architect",
+      "backend-architect",
+      "frontend-developer",
+      "appsec-reviewer",
+      "test-automation",
+      "reality-checker"
+    ],
+    "bug": [
+      "codebase-guide",
+      "frontend-developer",
+      "test-automation",
+      "reality-checker"
+    ],
+    "database": [
+      "codebase-guide",
+      "backend-architect",
+      "appsec-reviewer",
+      "test-automation",
+      "reality-checker"
+    ],
+    "qa": [
+      "reality-checker",
+      "appsec-reviewer"
+    ],
+    "mobile": [
+      "codebase-guide",
+      "software-architect",
+      "mobile-builder",
+      "appsec-reviewer",
+      "test-automation",
+      "reality-checker"
+    ]
+  },
+  "autonomousExecution": false,
+  "autoMerge": false,
+  "productionDatabaseWrites": false
+}
